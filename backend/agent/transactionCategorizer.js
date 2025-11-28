@@ -1,112 +1,207 @@
-/**
- * Transaction Categorizer Agent
- * Automatically categorizes transactions based on description, merchant, and amount
- */
+const huggingface = require('./huggingface');
 
-const categories = {
-  income: {
-    'Salary': ['salary', 'payroll', 'wage', 'stipend', 'compensation'],
-    'Freelance': ['freelance', 'consulting', 'contract', 'project payment', 'client payment'],
-    'Investment Returns': ['dividend', 'capital gain', 'returns', 'profit', 'maturity'],
-    'Interest': ['interest', 'fd interest', 'savings interest', 'deposit interest'],
-    'Other Income': ['refund', 'cashback', 'bonus', 'reimbursement', 'gift']
-  },
-  expense: {
-    'Food & Dining': ['swiggy', 'zomato', 'restaurant', 'cafe', 'food', 'pizza', 'burger', 'dining', 'eat', 'meal', 'uber eats', 'dominos', 'mcdonalds', 'kfc', 'starbucks'],
-    'Shopping': ['amazon', 'flipkart', 'myntra', 'ajio', 'shopping', 'mall', 'store', 'retail', 'meesho', 'nykaa', 'snapdeal'],
-    'Groceries': ['grocery', 'bigbasket', 'grofers', 'blinkit', 'zepto', 'dmart', 'reliance fresh', 'vegetables', 'fruits', 'supermarket', 'jiomart'],
-    'Transportation': ['uber', 'ola', 'rapido', 'metro', 'bus', 'train', 'petrol', 'diesel', 'fuel', 'parking', 'toll', 'irctc', 'cab', 'auto'],
-    'Subscriptions': ['netflix', 'spotify', 'prime', 'hotstar', 'youtube', 'subscription', 'membership', 'recurring', 'disney', 'zee5', 'gaana', 'apple music'],
-    'Entertainment': ['movie', 'cinema', 'pvr', 'inox', 'concert', 'event', 'game', 'bookmyshow', 'ticket', 'amusement'],
-    'Healthcare': ['hospital', 'doctor', 'pharmacy', 'medical', 'medicine', 'apollo', 'medplus', 'netmeds', 'pharmeasy', 'clinic', 'health'],
-    'Education': ['course', 'udemy', 'coursera', 'school', 'college', 'tuition', 'book', 'education', 'upgrad', 'byju', 'unacademy'],
-    'Bills & Utilities': ['electricity', 'water', 'gas', 'internet', 'broadband', 'phone', 'mobile', 'bill', 'recharge', 'postpaid', 'prepaid', 'airtel', 'jio', 'vi'],
-    'EMI': ['emi', 'loan', 'installment', 'credit card', 'repayment', 'mortgage', 'bajaj', 'hdfc loan'],
-    'Investments': ['mutual fund', 'stock', 'share', 'sip', 'zerodha', 'groww', 'upstox', 'investment', 'trading', 'nps', 'ppf'],
-    'Insurance': ['insurance', 'premium', 'lic', 'policy', 'term plan', 'health insurance', 'car insurance'],
-    'Rent': ['rent', 'house rent', 'pg', 'hostel', 'accommodation', 'lease'],
-    'Travel': ['flight', 'hotel', 'booking', 'makemytrip', 'goibibo', 'oyo', 'airbnb', 'travel', 'trip', 'vacation', 'cleartrip'],
-    'Other Expense': []
-  }
+// Fallback keyword mapping (used when AI is unavailable)
+const categoryKeywords = {
+  'Groceries': ['grocery', 'supermarket', 'vegetables', 'fruits', 'bigbasket', 'grofers', 'blinkit', 'zepto', 'instamart', 'dmart', 'reliance fresh', 'more', 'spencers'],
+  'Shopping': ['amazon', 'flipkart', 'myntra', 'ajio', 'meesho', 'nykaa', 'shopping', 'mall', 'store', 'retail', 'fashion', 'clothes', 'electronics'],
+  'Food & Dining': ['swiggy', 'zomato', 'restaurant', 'cafe', 'food', 'dining', 'pizza', 'burger', 'dominos', 'mcdonalds', 'kfc', 'starbucks', 'chaayos', 'hotel'],
+  'Transportation': ['uber', 'ola', 'rapido', 'metro', 'bus', 'train', 'irctc', 'petrol', 'diesel', 'fuel', 'parking', 'toll', 'fastag'],
+  'Entertainment': ['netflix', 'prime video', 'hotstar', 'spotify', 'gaana', 'movie', 'pvr', 'inox', 'game', 'playstation', 'xbox', 'concert', 'event'],
+  'Bills & Utilities': ['electricity', 'water', 'gas', 'internet', 'broadband', 'jio', 'airtel', 'vi', 'bsnl', 'maintenance', 'society'],
+  'Subscriptions': ['subscription', 'premium', 'membership', 'annual', 'monthly plan', 'renewal'],
+  'EMI': ['emi', 'loan', 'installment', 'bajaj', 'hdfc loan', 'icici loan', 'sbi loan'],
+  'Healthcare': ['hospital', 'clinic', 'doctor', 'medicine', 'pharmacy', 'apollo', 'medplus', '1mg', 'pharmeasy', 'netmeds', 'health', 'medical'],
+  'Education': ['school', 'college', 'university', 'course', 'udemy', 'coursera', 'unacademy', 'byjus', 'vedantu', 'tuition', 'books', 'stationery'],
+  'Investments': ['mutual fund', 'zerodha', 'groww', 'upstox', 'sip', 'stock', 'nifty', 'sensex', 'investment', 'trading', 'mf'],
+  'Income': ['salary', 'credited', 'received', 'payment received', 'income'],
+  'Interest Received': ['interest credit', 'interest received', 'fd interest', 'rd interest', 'savings interest'],
+  'Salary': ['salary', 'payroll', 'wages', 'monthly salary'],
+  'Freelance Income': ['freelance', 'consulting', 'project payment', 'client payment', 'gig'],
+  'Rent': ['rent', 'rental', 'housing', 'pg', 'hostel'],
+  'Travel': ['makemytrip', 'goibibo', 'cleartrip', 'yatra', 'flight', 'hotel booking', 'airbnb', 'oyo', 'travel'],
+  'Personal Care': ['salon', 'spa', 'gym', 'fitness', 'urban company', 'beauty', 'grooming'],
+  'Gifts & Donations': ['gift', 'donation', 'charity', 'ngo', 'temple', 'church', 'mosque'],
+  'Other': []
 };
 
 class TransactionCategorizer {
   constructor() {
-    this.categories = categories;
+    this.categories = Object.keys(categoryKeywords);
+    this.categorizationCache = new Map(); // Cache for same-session deduplication
   }
 
-  async categorize(transaction) {
-    const { description = '', merchantName = '', type } = transaction;
-    const searchText = `${description} ${merchantName}`.toLowerCase();
+  /**
+   * AI-first categorization with intelligent fallback
+   */
+  async categorizeTransaction(transaction, recentTransactions = []) {
+    const { description, merchant_name, amount, type } = transaction;
+    const searchText = `${description || ''} ${merchant_name || ''}`.toLowerCase().trim();
 
-    const categoryType = type === 'credit' ? 'income' : 'expense';
-    const categoryMap = this.categories[categoryType];
+    // Check cache first (same description in same session)
+    const cacheKey = `${searchText}-${amount}-${type}`;
+    if (this.categorizationCache.has(cacheKey)) {
+      const cached = this.categorizationCache.get(cacheKey);
+      return { ...cached, method: 'cached' };
+    }
 
-    for (const [category, keywords] of Object.entries(categoryMap)) {
+    // Try AI categorization first
+    console.log(`🤖 AI categorizing: "${searchText}"`);
+    
+    try {
+      const aiResult = await huggingface.categorizeTransaction(
+        transaction,
+        this.categories,
+        recentTransactions
+      );
+
+      if (aiResult && aiResult.confidence >= 0.6) {
+        console.log(`✅ AI categorized as: ${aiResult.category} (${(aiResult.confidence * 100).toFixed(0)}%)`);
+        
+        // Cache the result
+        this.categorizationCache.set(cacheKey, aiResult);
+        
+        // Limit cache size
+        if (this.categorizationCache.size > 500) {
+          const firstKey = this.categorizationCache.keys().next().value;
+          this.categorizationCache.delete(firstKey);
+        }
+
+        return aiResult;
+      }
+    } catch (error) {
+      console.error('AI categorization failed:', error.message);
+    }
+
+    // Fallback to keyword matching
+    console.log(`⚙️ Using keyword fallback for: "${searchText}"`);
+    const keywordResult = this.keywordCategorize(searchText);
+    
+    // Cache fallback result too
+    this.categorizationCache.set(cacheKey, keywordResult);
+    
+    return keywordResult;
+  }
+
+  /**
+   * Keyword-based categorization fallback
+   */
+  keywordCategorize(searchText) {
+    for (const [category, keywords] of Object.entries(categoryKeywords)) {
       for (const keyword of keywords) {
         if (searchText.includes(keyword.toLowerCase())) {
-          return category;
+          return {
+            category,
+            confidence: 0.85,
+            reasoning: `Matched keyword: "${keyword}"`,
+            method: 'keyword'
+          };
         }
       }
     }
 
-    // Default category if no match
-    return categoryType === 'income' ? 'Other Income' : 'Other Expense';
+    return {
+      category: 'Other',
+      confidence: 0.5,
+      reasoning: 'No keyword match found',
+      method: 'default'
+    };
   }
 
-  async categorizeMultiple(transactions) {
+  /**
+   * Batch categorize multiple transactions
+   */
+  async categorizeMultipleTransactions(transactions, existingCategorized = []) {
     const results = [];
-    for (const tx of transactions) {
-      const category = await this.categorize(tx);
-      results.push({ ...tx, category });
+    
+    // Process in batches of 5 to avoid overwhelming the API
+    const batchSize = 5;
+    
+    for (let i = 0; i < transactions.length; i += batchSize) {
+      const batch = transactions.slice(i, i + batchSize);
+      
+      // Process batch in parallel
+      const batchPromises = batch.map(async (transaction) => {
+        const result = await this.categorizeTransaction(
+          transaction,
+          existingCategorized.slice(-10) // Last 10 categorized for context
+        );
+        return {
+          transactionId: transaction.id,
+          ...result
+        };
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults);
+
+      // Add successfully categorized to context for next batch
+      for (const result of batchResults) {
+        if (result.method === 'ai' && result.confidence >= 0.7) {
+          const txn = batch.find(t => t.id === result.transactionId);
+          if (txn) {
+            existingCategorized.push({
+              description: txn.description,
+              category: result.category
+            });
+          }
+        }
+      }
+
+      // Small delay between batches to be nice to the API
+      if (i + batchSize < transactions.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
+
     return results;
   }
 
-  // Get category statistics
-  getCategoryStats(transactions) {
-    const stats = {};
-    
-    for (const tx of transactions) {
-      const category = tx.category || 'Uncategorized';
-      if (!stats[category]) {
-        stats[category] = {
-          count: 0,
-          total: 0,
-          transactions: []
-        };
+  /**
+   * Detect recurring transactions (kept local for performance)
+   */
+  detectRecurringTransaction(transactions) {
+    const merchantCounts = {};
+    const merchantAmounts = {};
+
+    for (const transaction of transactions) {
+      const key = transaction.merchant_name || transaction.description;
+      if (key) {
+        merchantCounts[key] = (merchantCounts[key] || 0) + 1;
+        if (!merchantAmounts[key]) {
+          merchantAmounts[key] = [];
+        }
+        merchantAmounts[key].push(transaction.amount);
       }
-      stats[category].count++;
-      stats[category].total += parseFloat(tx.amount);
-      stats[category].transactions.push(tx);
     }
 
-    return stats;
+    const recurring = [];
+    for (const [merchant, count] of Object.entries(merchantCounts)) {
+      if (count >= 2) {
+        const amounts = merchantAmounts[merchant];
+        const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+        const variance = amounts.reduce((sum, amt) => sum + Math.pow(amt - avgAmount, 2), 0) / amounts.length;
+        
+        // Low variance indicates recurring transaction
+        if (variance < avgAmount * 0.1) {
+          recurring.push({
+            merchant,
+            count,
+            averageAmount: avgAmount,
+            isRecurring: true
+          });
+        }
+      }
+    }
+
+    return recurring;
   }
 
-  // Identify recurring transactions (subscriptions)
-  identifyRecurring(transactions) {
-    const merchantCounts = {};
-    
-    for (const tx of transactions) {
-      if (tx.type === 'debit' && tx.merchant_name) {
-        const key = `${tx.merchant_name}_${tx.amount}`;
-        if (!merchantCounts[key]) {
-          merchantCounts[key] = {
-            merchant: tx.merchant_name,
-            amount: tx.amount,
-            count: 0,
-            dates: []
-          };
-        }
-        merchantCounts[key].count++;
-        merchantCounts[key].dates.push(tx.transaction_date);
-      }
-    }
-
-    // Filter for recurring (appears 2+ times with similar amounts)
-    return Object.values(merchantCounts).filter(m => m.count >= 2);
+  /**
+   * Clear categorization cache
+   */
+  clearCache() {
+    this.categorizationCache.clear();
   }
 }
 
-module.exports = TransactionCategorizer;
+module.exports = new TransactionCategorizer();

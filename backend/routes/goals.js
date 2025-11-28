@@ -2,57 +2,46 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../config/database');
-const { authMiddleware } = require('../middleware/auth');
+const finpalAgent = require('../agent');
 
 // Get all goals
-router.get('/', authMiddleware, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
+    const userId = req.user.userId;
     const [goals] = await pool.query(
-      'SELECT * FROM goals WHERE user_id = ? ORDER BY status ASC, target_date ASC',
-      [req.user.userId]
+      'SELECT * FROM goals WHERE user_id = ? ORDER BY priority DESC, target_date ASC',
+      [userId]
     );
-    res.json({ goals });
+    res.json(goals);
   } catch (error) {
     console.error('Get goals error:', error);
-    res.status(500).json({ error: 'Failed to get goals' });
-  }
-});
-
-// Get goal by id
-router.get('/:id', authMiddleware, async (req, res) => {
-  try {
-    const [goals] = await pool.query(
-      'SELECT * FROM goals WHERE id = ? AND user_id = ?',
-      [req.params.id, req.user.userId]
-    );
-
-    if (goals.length === 0) {
-      return res.status(404).json({ error: 'Goal not found' });
-    }
-
-    res.json({ goal: goals[0] });
-  } catch (error) {
-    console.error('Get goal error:', error);
-    res.status(500).json({ error: 'Failed to get goal' });
+    res.status(500).json({ error: 'Failed to fetch goals' });
   }
 });
 
 // Create goal
-router.post('/', authMiddleware, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const { name, description, targetAmount, targetDate, priority } = req.body;
+    const userId = req.user.userId;
+    const { name, target_amount, target_date, priority, category } = req.body;
+
     const goalId = uuidv4();
 
-    // Calculate monthly saving needed
-    const today = new Date();
-    const target = new Date(targetDate);
-    const monthsRemaining = Math.max(1, Math.ceil((target - today) / (30 * 24 * 60 * 60 * 1000)));
-    const monthlySavingNeeded = targetAmount / monthsRemaining;
+    // Get user profile for goal plan generation
+    const [users] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+    const userProfile = users[0];
+
+    // Generate goal plan
+    const goalPlan = await finpalAgent.createGoalPlan(
+      { name, target_amount, target_date },
+      userProfile,
+      0
+    );
 
     await pool.query(
-      `INSERT INTO goals (id, user_id, name, description, target_amount, target_date, priority, monthly_saving_needed)
+      `INSERT INTO goals (id, user_id, name, target_amount, target_date, priority, category, monthly_contribution)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [goalId, req.user.userId, name, description, targetAmount, targetDate, priority || 'medium', monthlySavingNeeded]
+      [goalId, userId, name, target_amount, target_date, priority || 'medium', category, goalPlan.requiredMonthlyContribution]
     );
 
     res.status(201).json({
@@ -60,10 +49,13 @@ router.post('/', authMiddleware, async (req, res) => {
       goal: {
         id: goalId,
         name,
-        targetAmount,
-        targetDate,
-        monthlySavingNeeded
-      }
+        target_amount,
+        target_date,
+        priority,
+        category,
+        monthly_contribution: goalPlan.requiredMonthlyContribution
+      },
+      plan: goalPlan
     });
   } catch (error) {
     console.error('Create goal error:', error);
@@ -71,83 +63,73 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// Update goal
-router.put('/:id', authMiddleware, async (req, res) => {
+// Update goal progress
+router.put('/:id/progress', async (req, res) => {
   try {
-    const { name, description, targetAmount, targetDate, priority, currentAmount, status } = req.body;
-
-    let monthlySavingNeeded = null;
-    if (targetAmount && targetDate && currentAmount !== undefined) {
-      const today = new Date();
-      const target = new Date(targetDate);
-      const monthsRemaining = Math.max(1, Math.ceil((target - today) / (30 * 24 * 60 * 60 * 1000)));
-      monthlySavingNeeded = (targetAmount - (currentAmount || 0)) / monthsRemaining;
-    }
-
-    await pool.query(
-      `UPDATE goals SET 
-        name = COALESCE(?, name),
-        description = COALESCE(?, description),
-        target_amount = COALESCE(?, target_amount),
-        target_date = COALESCE(?, target_date),
-        priority = COALESCE(?, priority),
-        current_amount = COALESCE(?, current_amount),
-        status = COALESCE(?, status),
-        monthly_saving_needed = COALESCE(?, monthly_saving_needed)
-       WHERE id = ? AND user_id = ?`,
-      [name, description, targetAmount, targetDate, priority, currentAmount, status, monthlySavingNeeded, req.params.id, req.user.userId]
-    );
-
-    res.json({ message: 'Goal updated successfully' });
-  } catch (error) {
-    console.error('Update goal error:', error);
-    res.status(500).json({ error: 'Failed to update goal' });
-  }
-});
-
-// Add to goal
-router.post('/:id/contribute', authMiddleware, async (req, res) => {
-  try {
+    const { id } = req.params;
     const { amount } = req.body;
+    const userId = req.user.userId;
 
-    const [goals] = await pool.query(
-      'SELECT * FROM goals WHERE id = ? AND user_id = ?',
-      [req.params.id, req.user.userId]
-    );
-
+    const [goals] = await pool.query('SELECT * FROM goals WHERE id = ? AND user_id = ?', [id, userId]);
     if (goals.length === 0) {
       return res.status(404).json({ error: 'Goal not found' });
     }
 
     const goal = goals[0];
     const newAmount = parseFloat(goal.current_amount) + parseFloat(amount);
-    const status = newAmount >= goal.target_amount ? 'completed' : 'active';
+    
+    let status = 'active';
+    if (newAmount >= goal.target_amount) {
+      status = 'completed';
+    }
 
     await pool.query(
-      'UPDATE goals SET current_amount = ?, status = ? WHERE id = ?',
-      [newAmount, status, req.params.id]
+      'UPDATE goals SET current_amount = ?, status = ?, updated_at = NOW() WHERE id = ?',
+      [newAmount, status, id]
     );
 
     res.json({
-      message: 'Contribution added successfully',
-      currentAmount: newAmount,
+      message: status === 'completed' ? 'Congratulations! Goal completed!' : 'Progress updated',
+      current_amount: newAmount,
       status,
-      progress: (newAmount / goal.target_amount * 100).toFixed(2)
+      progress: ((newAmount / goal.target_amount) * 100).toFixed(1)
     });
   } catch (error) {
-    console.error('Contribute to goal error:', error);
-    res.status(500).json({ error: 'Failed to contribute to goal' });
+    console.error('Update progress error:', error);
+    res.status(500).json({ error: 'Failed to update progress' });
+  }
+});
+
+// Get goal suggestions
+router.get('/suggestions', async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    const [users] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+    const [transactions] = await pool.query('SELECT * FROM transactions WHERE user_id = ?', [userId]);
+    const [existingGoals] = await pool.query('SELECT * FROM goals WHERE user_id = ?', [userId]);
+
+    const suggestions = await finpalAgent.modules.budgetGoalGenerator.suggestGoals(
+      users[0],
+      transactions,
+      existingGoals
+    );
+
+    res.json(suggestions);
+  } catch (error) {
+    console.error('Suggestions error:', error);
+    res.status(500).json({ error: 'Failed to get suggestions' });
   }
 });
 
 // Delete goal
-router.delete('/:id', authMiddleware, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
-    await pool.query(
-      'DELETE FROM goals WHERE id = ? AND user_id = ?',
-      [req.params.id, req.user.userId]
-    );
-    res.json({ message: 'Goal deleted successfully' });
+    const { id } = req.params;
+    const userId = req.user.userId;
+
+    await pool.query('DELETE FROM goals WHERE id = ? AND user_id = ?', [id, userId]);
+    res.json({ message: 'Goal deleted' });
   } catch (error) {
     console.error('Delete goal error:', error);
     res.status(500).json({ error: 'Failed to delete goal' });

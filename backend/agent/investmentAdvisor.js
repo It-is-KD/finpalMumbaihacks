@@ -1,7 +1,4 @@
-/**
- * Investment Advisor Agent
- * Provides personalized investment recommendations based on user profile and goals
- */
+const huggingface = require('./huggingface');
 
 class InvestmentAdvisor {
   constructor() {
@@ -9,328 +6,351 @@ class InvestmentAdvisor {
       fd: {
         name: 'Fixed Deposit',
         type: 'fd',
-        riskLevel: 'low',
-        expectedReturn: { min: 5.5, max: 7.5 },
         minInvestment: 1000,
-        lockIn: '1-5 years',
-        liquidity: 'low',
-        taxBenefit: false,
-        description: 'Safe investment with guaranteed returns. Ideal for short-term goals.'
-      },
-      recurring_deposit: {
-        name: 'Recurring Deposit',
-        type: 'fd',
+        expectedReturns: { min: 5.5, max: 7.5 },
         riskLevel: 'low',
-        expectedReturn: { min: 5.0, max: 7.0 },
-        minInvestment: 500,
-        lockIn: '6 months - 10 years',
         liquidity: 'low',
         taxBenefit: false,
-        description: 'Build savings with small monthly deposits. Good for systematic savers.'
+        tenure: { min: 7, max: 120 }, // months
+        description: 'Safe investment with guaranteed returns. Best for conservative investors.'
+      },
+      bonds: {
+        name: 'Government Bonds',
+        type: 'bonds',
+        minInvestment: 10000,
+        expectedReturns: { min: 7, max: 8.5 },
+        riskLevel: 'low',
+        liquidity: 'medium',
+        taxBenefit: true,
+        tenure: { min: 36, max: 180 },
+        description: 'Government-backed securities with tax benefits. Good for long-term wealth preservation.'
+      },
+      mutual_funds: {
+        name: 'Mutual Funds',
+        type: 'mutual_funds',
+        minInvestment: 500,
+        expectedReturns: { min: 10, max: 15 },
+        riskLevel: 'medium',
+        liquidity: 'high',
+        taxBenefit: true,
+        tenure: { min: 12, max: 240 },
+        description: 'Diversified investment managed by professionals. SIP option available.'
+      },
+      stocks: {
+        name: 'Direct Stocks',
+        type: 'stocks',
+        minInvestment: 100,
+        expectedReturns: { min: 12, max: 25 },
+        riskLevel: 'high',
+        liquidity: 'high',
+        taxBenefit: false,
+        tenure: { min: 1, max: 360 },
+        description: 'Direct equity investment. Higher returns with higher risk.'
+      },
+      gold: {
+        name: 'Digital Gold/SGBs',
+        type: 'gold',
+        minInvestment: 1,
+        expectedReturns: { min: 8, max: 12 },
+        riskLevel: 'medium',
+        liquidity: 'medium',
+        taxBenefit: true,
+        tenure: { min: 60, max: 96 },
+        description: 'Hedge against inflation. Sovereign Gold Bonds offer additional interest.'
       },
       ppf: {
         name: 'Public Provident Fund',
-        type: 'bonds',
-        riskLevel: 'low',
-        expectedReturn: { min: 7.0, max: 8.0 },
+        type: 'ppf',
         minInvestment: 500,
-        lockIn: '15 years',
-        liquidity: 'very low',
+        expectedReturns: { min: 7.1, max: 7.1 },
+        riskLevel: 'low',
+        liquidity: 'low',
         taxBenefit: true,
-        description: 'Government-backed, tax-free returns. Best for long-term wealth building.'
+        tenure: { min: 180, max: 180 },
+        description: 'Tax-free returns with government backing. 15-year lock-in period.'
       },
       nps: {
         name: 'National Pension System',
-        type: 'bonds',
-        riskLevel: 'medium',
-        expectedReturn: { min: 8.0, max: 12.0 },
+        type: 'nps',
         minInvestment: 500,
-        lockIn: 'Until 60',
-        liquidity: 'very low',
-        taxBenefit: true,
-        description: 'Retirement-focused with tax benefits under 80CCD. Mix of equity and debt.'
-      },
-      elss: {
-        name: 'Equity Linked Savings Scheme',
-        type: 'mutual_funds',
-        riskLevel: 'high',
-        expectedReturn: { min: 10.0, max: 18.0 },
-        minInvestment: 500,
-        lockIn: '3 years',
-        liquidity: 'medium',
-        taxBenefit: true,
-        description: 'Tax-saving mutual fund with equity exposure. Good for aggressive savers.'
-      },
-      index_funds: {
-        name: 'Index Funds',
-        type: 'mutual_funds',
+        expectedReturns: { min: 9, max: 12 },
         riskLevel: 'medium',
-        expectedReturn: { min: 10.0, max: 15.0 },
-        minInvestment: 100,
-        lockIn: 'None',
-        liquidity: 'high',
-        taxBenefit: false,
-        description: 'Low-cost funds tracking market indices. Ideal for passive investors.'
-      },
-      debt_funds: {
-        name: 'Debt Mutual Funds',
-        type: 'mutual_funds',
-        riskLevel: 'low',
-        expectedReturn: { min: 6.0, max: 9.0 },
-        minInvestment: 500,
-        lockIn: 'None',
-        liquidity: 'high',
-        taxBenefit: false,
-        description: 'Lower risk than equity funds. Good for medium-term goals.'
-      },
-      large_cap: {
-        name: 'Large Cap Stocks/Funds',
-        type: 'stocks',
-        riskLevel: 'medium',
-        expectedReturn: { min: 10.0, max: 15.0 },
-        minInvestment: 1000,
-        lockIn: 'None',
-        liquidity: 'high',
-        taxBenefit: false,
-        description: 'Blue-chip companies with stable growth. Lower volatility than small caps.'
-      },
-      small_mid_cap: {
-        name: 'Small & Mid Cap Funds',
-        type: 'stocks',
-        riskLevel: 'high',
-        expectedReturn: { min: 12.0, max: 25.0 },
-        minInvestment: 500,
-        lockIn: 'None',
-        liquidity: 'high',
-        taxBenefit: false,
-        description: 'Higher growth potential with higher risk. For long-term aggressive investors.'
-      },
-      gold: {
-        name: 'Digital Gold / Gold ETF',
-        type: 'gold',
-        riskLevel: 'medium',
-        expectedReturn: { min: 5.0, max: 12.0 },
-        minInvestment: 100,
-        lockIn: 'None',
-        liquidity: 'high',
-        taxBenefit: false,
-        description: 'Hedge against inflation. Good for portfolio diversification.'
-      },
-      sgb: {
-        name: 'Sovereign Gold Bonds',
-        type: 'gold',
-        riskLevel: 'low',
-        expectedReturn: { min: 6.0, max: 12.0 },
-        minInvestment: 4000,
-        lockIn: '8 years (5 year exit)',
         liquidity: 'low',
         taxBenefit: true,
-        description: 'Government gold bonds with 2.5% annual interest. Tax-free on maturity.'
+        tenure: { min: 240, max: 480 },
+        description: 'Retirement-focused investment with additional tax benefits under 80CCD.'
       }
     };
   }
 
-  async recommend(user, transactions, goals) {
+  async generateRecommendations(userProfile, goals, monthlyExpenses) {
     const recommendations = [];
-    const monthlyIncome = parseFloat(user.monthly_income) || 0;
-    const riskTolerance = user.risk_tolerance || 'medium';
-    const incomeType = user.income_type || 'regular';
+    const riskTolerance = userProfile.risk_tolerance || 'medium';
+    const monthlyIncome = parseFloat(userProfile.monthly_income) || 50000;
+    const incomeType = userProfile.income_type || 'salaried';
+    const investableAmount = (monthlyIncome - monthlyExpenses) * 0.7;
 
-    // Calculate investable surplus
-    const monthlyExpenses = this.calculateMonthlyExpenses(transactions);
-    const investableSurplus = Math.max(0, monthlyIncome - monthlyExpenses);
-    const goalSavings = this.calculateGoalSavings(goals);
-
-    // Determine investment allocation based on risk tolerance
-    const allocation = this.getAllocation(riskTolerance, incomeType);
-
-    // Generate recommendations
-    const totalInvestable = investableSurplus - goalSavings;
-    
-    if (totalInvestable <= 0) {
-      return {
-        summary: 'Focus on building savings before investing',
-        investableSurplus: 0,
-        recommendations: [{
-          type: 'advice',
-          title: 'Build Savings First',
-          message: 'Your current income doesn\'t leave much room for investments. Focus on reducing expenses and meeting your savings goals first.',
-          priority: 'high'
-        }]
-      };
+    if (investableAmount <= 0) {
+      return [{
+        type: 'warning',
+        title: 'Build Savings First',
+        description: 'Focus on reducing expenses before investing. Aim to save at least 20% of income.',
+        action: 'Review your expense analysis for potential cuts.',
+        method: 'rule'
+      }];
     }
 
-    // Emergency fund first
-    if (!this.hasEmergencyFund(transactions, monthlyExpenses)) {
+    // Emergency fund check
+    const hasEmergencyGoal = goals.some(g => g.category === 'emergency' || g.name.toLowerCase().includes('emergency'));
+    if (!hasEmergencyGoal) {
       recommendations.push({
-        ...this.investmentOptions.recurring_deposit,
-        recommendedAmount: Math.min(totalInvestable * 0.5, monthlyExpenses * 0.5),
-        reason: 'Build an emergency fund of 6 months expenses before other investments',
-        priority: 1
+        type: 'priority',
+        investmentType: 'fd',
+        name: 'Emergency Fund in FD',
+        amount: monthlyIncome * 6,
+        monthlyContribution: monthlyIncome * 0.15,
+        description: 'Before other investments, build 6 months expenses as emergency fund in a liquid FD.',
+        expectedReturns: '6-7%',
+        riskLevel: 'low',
+        priority: 1,
+        method: 'rule'
       });
     }
 
-    // Tax-saving investments (80C)
-    const taxSavingAmount = Math.min(totalInvestable * allocation.taxSaving, 12500); // 1.5L yearly / 12
-    if (taxSavingAmount >= 500) {
-      if (riskTolerance === 'high') {
-        recommendations.push({
-          ...this.investmentOptions.elss,
-          recommendedAmount: taxSavingAmount,
-          reason: 'Maximize tax savings under 80C while getting equity exposure',
-          priority: 2
-        });
-      } else {
-        recommendations.push({
-          ...this.investmentOptions.ppf,
-          recommendedAmount: taxSavingAmount,
-          reason: 'Safe, tax-free returns with government backing',
-          priority: 2
-        });
+    // Risk-based base recommendations
+    if (riskTolerance === 'low') {
+      recommendations.push(
+        this.createRecommendation('fd', investableAmount * 0.4, 'Conservative Growth'),
+        this.createRecommendation('ppf', 12500, 'Tax Saving'),
+        this.createRecommendation('bonds', investableAmount * 0.3, 'Stable Income')
+      );
+    } else if (riskTolerance === 'medium') {
+      recommendations.push(
+        this.createRecommendation('mutual_funds', investableAmount * 0.4, 'Balanced Growth'),
+        this.createRecommendation('gold', investableAmount * 0.1, 'Inflation Hedge'),
+        this.createRecommendation('fd', investableAmount * 0.2, 'Stability'),
+        this.createRecommendation('nps', investableAmount * 0.15, 'Retirement Planning')
+      );
+    } else {
+      recommendations.push(
+        this.createRecommendation('stocks', investableAmount * 0.3, 'High Growth'),
+        this.createRecommendation('mutual_funds', investableAmount * 0.35, 'Diversified Growth'),
+        this.createRecommendation('gold', investableAmount * 0.1, 'Portfolio Balance'),
+        this.createRecommendation('nps', investableAmount * 0.1, 'Tax-Efficient Retirement')
+      );
+    }
+
+    // Add goal-specific recommendations
+    for (const goal of goals) {
+      const targetDate = new Date(goal.target_date);
+      const monthsRemaining = Math.max(1,
+        (targetDate.getFullYear() - new Date().getFullYear()) * 12 +
+        (targetDate.getMonth() - new Date().getMonth())
+      );
+      
+      const goalRecommendation = this.getGoalBasedRecommendation(goal, monthsRemaining, riskTolerance);
+      if (goalRecommendation) {
+        recommendations.push(goalRecommendation);
       }
     }
 
-    // Retirement (NPS)
-    if (monthlyIncome > 30000 && incomeType === 'regular') {
-      recommendations.push({
-        ...this.investmentOptions.nps,
-        recommendedAmount: Math.min(totalInvestable * 0.1, 4166), // 50K yearly / 12
-        reason: 'Additional tax benefit under 80CCD(1B) and retirement planning',
-        priority: 3
-      });
-    }
-
-    // Core investment based on risk tolerance
-    const coreAmount = totalInvestable * allocation.core;
-    
-    if (riskTolerance === 'low') {
-      recommendations.push({
-        ...this.investmentOptions.debt_funds,
-        recommendedAmount: coreAmount * 0.6,
-        reason: 'Low-risk, better returns than FD with liquidity',
-        priority: 4
-      });
-      recommendations.push({
-        ...this.investmentOptions.sgb,
-        recommendedAmount: coreAmount * 0.4,
-        reason: 'Gold as portfolio hedge with government backing',
-        priority: 5
-      });
-    } else if (riskTolerance === 'medium') {
-      recommendations.push({
-        ...this.investmentOptions.index_funds,
-        recommendedAmount: coreAmount * 0.5,
-        reason: 'Passive investing with market-linked returns',
-        priority: 4
-      });
-      recommendations.push({
-        ...this.investmentOptions.large_cap,
-        recommendedAmount: coreAmount * 0.3,
-        reason: 'Stable equity exposure through blue-chip companies',
-        priority: 5
-      });
-      recommendations.push({
-        ...this.investmentOptions.gold,
-        recommendedAmount: coreAmount * 0.2,
-        reason: 'Portfolio diversification and inflation hedge',
-        priority: 6
-      });
-    } else {
-      recommendations.push({
-        ...this.investmentOptions.index_funds,
-        recommendedAmount: coreAmount * 0.4,
-        reason: 'Low-cost equity exposure as base',
-        priority: 4
-      });
-      recommendations.push({
-        ...this.investmentOptions.small_mid_cap,
-        recommendedAmount: coreAmount * 0.4,
-        reason: 'Higher growth potential for long-term wealth',
-        priority: 5
-      });
-      recommendations.push({
-        ...this.investmentOptions.gold,
-        recommendedAmount: coreAmount * 0.2,
-        reason: 'Portfolio diversification',
-        priority: 6
-      });
-    }
-
-    // Special recommendations for irregular income
-    if (incomeType === 'irregular' || incomeType === 'freelance' || incomeType === 'gig') {
+    // Income type specific advice
+    if (incomeType === 'freelancer' || incomeType === 'gig') {
       recommendations.push({
         type: 'advice',
-        title: 'Irregular Income Strategy',
-        message: 'During high-income months, invest more. Keep 3 months expenses in liquid funds.',
-        priority: 0
+        title: 'Variable Income Strategy',
+        description: 'With irregular income, maintain higher liquid savings. Consider SIPs that allow pause/resume.',
+        suggestions: [
+          'Keep 3 months expenses in savings account',
+          'Use SIP pause feature during low-income months',
+          'Avoid long-term lock-in investments initially'
+        ],
+        method: 'rule'
       });
     }
 
-    return {
-      summary: this.generateSummary(riskTolerance, totalInvestable),
-      investableSurplus: totalInvestable,
-      allocation,
-      recommendations: recommendations.sort((a, b) => a.priority - b.priority)
-    };
-  }
-
-  calculateMonthlyExpenses(transactions) {
-    const expenses = transactions.filter(tx => tx.type === 'debit');
-    if (expenses.length === 0) return 0;
-
-    const monthlyExpenses = {};
-    for (const tx of expenses) {
-      const month = new Date(tx.transaction_date).toISOString().slice(0, 7);
-      if (!monthlyExpenses[month]) monthlyExpenses[month] = 0;
-      monthlyExpenses[month] += parseFloat(tx.amount);
-    }
-
-    const months = Object.values(monthlyExpenses);
-    return months.length > 0 ? months.reduce((a, b) => a + b, 0) / months.length : 0;
-  }
-
-  calculateGoalSavings(goals) {
-    return goals
-      .filter(g => g.status === 'active')
-      .reduce((sum, g) => sum + parseFloat(g.monthly_saving_needed || 0), 0);
-  }
-
-  hasEmergencyFund(transactions, monthlyExpenses) {
-    // Simplified check - in reality would check account balances
-    return monthlyExpenses * 6 < 100000; // Assume they have emergency fund if expenses are low
-  }
-
-  getAllocation(riskTolerance, incomeType) {
-    const baseAllocation = {
-      low: { taxSaving: 0.3, core: 0.6, liquid: 0.1 },
-      medium: { taxSaving: 0.25, core: 0.65, liquid: 0.1 },
-      high: { taxSaving: 0.2, core: 0.75, liquid: 0.05 }
-    };
-
-    const allocation = baseAllocation[riskTolerance] || baseAllocation.medium;
-
-    // Increase liquid allocation for irregular income
-    if (incomeType === 'irregular' || incomeType === 'freelance' || incomeType === 'gig') {
-      allocation.liquid = 0.2;
-      allocation.core -= 0.1;
-    }
-
-    return allocation;
-  }
-
-  generateSummary(riskTolerance, investable) {
-    if (investable < 1000) {
-      return 'Start with small investments and build the habit. Even ₹100/month compounds over time.';
-    }
+    // Now enhance with AI explanations
+    console.log('🤖 Enhancing investment recommendations with AI...');
     
-    const summaries = {
-      low: 'A conservative portfolio focused on capital preservation with steady returns.',
-      medium: 'A balanced portfolio with mix of equity and debt for growth with stability.',
-      high: 'An aggressive portfolio focused on wealth creation through equity investments.'
+    try {
+      const financialSummary = {
+        surplus: investableAmount,
+        savingsRate: monthlyIncome > 0 ? ((monthlyIncome - monthlyExpenses) / monthlyIncome * 100).toFixed(1) : 0
+      };
+      
+      const aiEnhancements = await huggingface.generateInvestmentAdvice(
+        userProfile,
+        goals,
+        financialSummary,
+        recommendations
+      );
+      
+      if (aiEnhancements && aiEnhancements.length > 0) {
+        console.log(`✅ AI enhanced ${aiEnhancements.length} recommendations`);
+        
+        // Merge AI insights into recommendations
+        for (const rec of recommendations) {
+          const matching = aiEnhancements.find(ai => ai.type === rec.investmentType);
+          if (matching) {
+            rec.explanation = matching.explanation || rec.description;
+            rec.whyThisWorks = matching.whyThisWorks;
+            rec.tips = matching.tips;
+            rec.warnings = matching.warnings;
+            rec.method = 'ai';
+          }
+        }
+      }
+    } catch (error) {
+      console.error('AI investment advice enhancement failed:', error.message);
+    }
+
+    return recommendations;
+  }
+
+  createRecommendation(type, amount, purpose) {
+    const option = this.investmentOptions[type];
+    return {
+      type: 'recommendation',
+      investmentType: type,
+      name: `${option.name} for ${purpose}`,
+      amount: Math.round(amount),
+      monthlyContribution: Math.round(amount / 12),
+      description: option.description,
+      expectedReturns: `${option.expectedReturns.min}-${option.expectedReturns.max}%`,
+      riskLevel: option.riskLevel,
+      minInvestment: option.minInvestment,
+      taxBenefit: option.taxBenefit,
+      liquidity: option.liquidity
+    };
+  }
+
+  getGoalBasedRecommendation(goal, monthsRemaining, riskTolerance) {
+    const amount = goal.target_amount - goal.current_amount;
+    
+    if (monthsRemaining <= 12) {
+      // Short-term goal - low risk
+      return {
+        type: 'goal_specific',
+        goalName: goal.name,
+        investmentType: 'fd',
+        name: `Short-term FD for ${goal.name}`,
+        amount: Math.round(amount),
+        description: 'For short-term goals, FD provides safety and predictable returns.',
+        expectedReturns: '6-7%',
+        riskLevel: 'low'
+      };
+    } else if (monthsRemaining <= 36) {
+      // Medium-term - balanced
+      return {
+        type: 'goal_specific',
+        goalName: goal.name,
+        investmentType: 'mutual_funds',
+        name: `Debt Mutual Fund for ${goal.name}`,
+        amount: Math.round(amount),
+        description: 'Debt mutual funds offer better returns than FD for 1-3 year horizon.',
+        expectedReturns: '7-9%',
+        riskLevel: 'low-medium'
+      };
+    } else {
+      // Long-term - can take more risk
+      const type = riskTolerance === 'low' ? 'ppf' : 'mutual_funds';
+      return {
+        type: 'goal_specific',
+        goalName: goal.name,
+        investmentType: type,
+        name: `Equity Fund for ${goal.name}`,
+        amount: Math.round(amount),
+        description: 'For 3+ year goals, equity offers best inflation-beating returns.',
+        expectedReturns: '12-15%',
+        riskLevel: 'medium-high'
+      };
+    }
+  }
+
+  async getInvestmentEducation(topic) {
+    const educationalContent = {
+      sip: {
+        title: 'Systematic Investment Plan (SIP)',
+        description: 'SIP allows you to invest a fixed amount regularly in mutual funds.',
+        benefits: [
+          'Rupee cost averaging reduces market timing risk',
+          'Disciplined investing habit',
+          'Start with as low as ₹500/month',
+          'Power of compounding over time'
+        ],
+        example: 'Investing ₹5,000/month for 20 years at 12% returns = ₹50 lakhs'
+      },
+      compounding: {
+        title: 'Power of Compounding',
+        description: 'Earning returns on your returns over time.',
+        benefits: [
+          'Earlier you start, more wealth you build',
+          'Even small amounts grow significantly',
+          'Works best with long investment horizon'
+        ],
+        example: '₹1 lakh at 12% for 30 years becomes ₹30 lakhs'
+      },
+      diversification: {
+        title: 'Portfolio Diversification',
+        description: 'Spreading investments across different asset classes.',
+        benefits: [
+          'Reduces overall portfolio risk',
+          'Different assets perform well at different times',
+          'Smoother returns over time'
+        ],
+        example: 'Mix of stocks (50%), bonds (30%), gold (10%), FD (10%)'
+      },
+      tax_saving: {
+        title: 'Tax-Saving Investments (80C)',
+        description: 'Investments that reduce your taxable income.',
+        options: [
+          'PPF - ₹1.5L limit, 7.1% returns',
+          'ELSS Mutual Funds - 3 year lock-in, 12-15% returns',
+          'NPS - Additional ₹50K under 80CCD(1B)',
+          'Life Insurance Premium'
+        ],
+        example: 'Investing ₹1.5L in ELSS can save ₹46,800 tax (30% bracket)'
+      }
     };
 
-    return summaries[riskTolerance] || summaries.medium;
+    return educationalContent[topic] || educationalContent.sip;
+  }
+
+  async calculateProjectedReturns(amount, years, investmentType) {
+    const option = this.investmentOptions[investmentType];
+    if (!option) return null;
+
+    const avgReturn = (option.expectedReturns.min + option.expectedReturns.max) / 2 / 100;
+    
+    // For SIP calculation
+    const sipMonthlyAmount = amount;
+    const months = years * 12;
+    const monthlyRate = avgReturn / 12;
+    
+    const sipFutureValue = sipMonthlyAmount * 
+      (((Math.pow(1 + monthlyRate, months) - 1) / monthlyRate) * (1 + monthlyRate));
+    
+    // For lumpsum
+    const lumpsumFutureValue = amount * Math.pow(1 + avgReturn, years);
+    
+    return {
+      investmentType,
+      inputAmount: amount,
+      years,
+      expectedReturn: `${option.expectedReturns.min}-${option.expectedReturns.max}%`,
+      sipProjection: {
+        monthlyInvestment: sipMonthlyAmount,
+        totalInvested: sipMonthlyAmount * months,
+        futureValue: Math.round(sipFutureValue),
+        returns: Math.round(sipFutureValue - (sipMonthlyAmount * months))
+      },
+      lumpsumProjection: {
+        investment: amount,
+        futureValue: Math.round(lumpsumFutureValue),
+        returns: Math.round(lumpsumFutureValue - amount)
+      }
+    };
   }
 }
 
-module.exports = InvestmentAdvisor;
+module.exports = new InvestmentAdvisor();

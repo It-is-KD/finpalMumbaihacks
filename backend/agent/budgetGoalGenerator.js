@@ -1,259 +1,334 @@
-/**
- * Budget & Goal Generator Agent
- * Creates personalized budgets and financial goals based on user behavior
- */
+const huggingface = require('./huggingface');
 
 class BudgetGoalGenerator {
   constructor() {
-    this.categoryAllocationRules = {
-      essential: ['Rent', 'Bills & Utilities', 'Groceries', 'Healthcare', 'Transportation', 'Insurance', 'EMI'],
-      discretionary: ['Food & Dining', 'Shopping', 'Entertainment', 'Travel', 'Subscriptions'],
-      growth: ['Investments', 'Education']
-    };
-    
-    // 50-30-20 rule as baseline
-    this.defaultAllocation = {
-      essential: 0.50,
-      discretionary: 0.30,
-      savings: 0.20
-    };
+    this.defaultCategories = [
+      'Groceries', 'Shopping', 'Food & Dining', 'Transportation',
+      'Entertainment', 'Bills & Utilities', 'Subscriptions', 'Healthcare'
+    ];
   }
 
-  async generateBudget(user, transactions, goals) {
-    const monthlyIncome = parseFloat(user.monthly_income) || this.estimateIncome(transactions);
+  /**
+   * Generate AI-enhanced smart budgets
+   */
+  async generateSmartBudget(userProfile, transactionHistory) {
+    const monthlyIncome = parseFloat(userProfile.monthly_income) || 0;
+    const incomeType = userProfile.income_type || 'salaried';
     
-    if (monthlyIncome === 0) {
-      return {
-        error: 'Unable to determine monthly income. Please update your profile.',
-        budgets: []
-      };
+    // Calculate category averages (local computation)
+    const categoryAverages = this.calculateCategoryAverages(transactionHistory);
+    
+    // Apply 50/30/20 rule as baseline
+    const needsBudget = monthlyIncome * 0.5;
+    const wantsBudget = monthlyIncome * 0.3;
+    const savingsBudget = monthlyIncome * 0.2;
+
+    let adjustmentFactor = 1;
+    if (incomeType === 'freelancer' || incomeType === 'gig') {
+      adjustmentFactor = 0.8;
     }
 
-    const result = {
-      monthlyIncome,
-      recommendedBudgets: [],
-      savingsTarget: 0,
-      goalContributions: [],
-      insights: []
-    };
-
-    // Analyze current spending patterns
-    const spendingPatterns = this.analyzeSpendingPatterns(transactions);
+    // Try AI-enhanced budget generation
+    console.log('🤖 Generating AI-enhanced budget recommendations...');
     
-    // Calculate savings target based on goals
-    const goalSavings = this.calculateGoalSavings(goals, monthlyIncome);
-    result.goalContributions = goalSavings.contributions;
-    result.savingsTarget = goalSavings.totalNeeded;
-
-    // Generate category budgets
-    const availableAfterSavings = monthlyIncome - result.savingsTarget;
-    result.recommendedBudgets = this.allocateBudgets(spendingPatterns, availableAfterSavings, monthlyIncome);
-
-    // Generate insights
-    result.insights = this.generateInsights(spendingPatterns, result.recommendedBudgets, monthlyIncome);
-
-    return result;
-  }
-
-  estimateIncome(transactions) {
-    const credits = transactions.filter(tx => tx.type === 'credit');
-    if (credits.length === 0) return 0;
-
-    // Group by month and get average
-    const monthlyIncome = {};
-    for (const tx of credits) {
-      const month = new Date(tx.transaction_date).toISOString().slice(0, 7);
-      if (!monthlyIncome[month]) monthlyIncome[month] = 0;
-      monthlyIncome[month] += parseFloat(tx.amount);
-    }
-
-    const months = Object.values(monthlyIncome);
-    return months.length > 0 ? months.reduce((a, b) => a + b, 0) / months.length : 0;
-  }
-
-  analyzeSpendingPatterns(transactions) {
-    const patterns = {};
-    const expenses = transactions.filter(tx => tx.type === 'debit');
-    
-    for (const tx of expenses) {
-      const category = tx.category || 'Other Expense';
-      if (!patterns[category]) {
-        patterns[category] = { total: 0, count: 0, average: 0 };
-      }
-      patterns[category].total += parseFloat(tx.amount);
-      patterns[category].count++;
-    }
-
-    // Calculate monthly average
-    const months = new Set(transactions.map(tx => 
-      new Date(tx.transaction_date).toISOString().slice(0, 7)
-    ));
-    const monthCount = Math.max(1, months.size);
-
-    for (const category of Object.keys(patterns)) {
-      patterns[category].average = patterns[category].total / monthCount;
-    }
-
-    return patterns;
-  }
-
-  calculateGoalSavings(goals, monthlyIncome) {
-    const contributions = [];
-    let totalNeeded = 0;
-
-    const activeGoals = goals.filter(g => g.status === 'active');
-    
-    for (const goal of activeGoals) {
-      const remaining = parseFloat(goal.target_amount) - parseFloat(goal.current_amount || 0);
-      const monthsLeft = Math.max(1, this.monthsBetween(new Date(), new Date(goal.target_date)));
-      const monthlyNeeded = remaining / monthsLeft;
+    try {
+      const aiResult = await huggingface.generateBudgetRecommendations(
+        userProfile,
+        categoryAverages,
+        []
+      );
       
-      contributions.push({
-        goalId: goal.id,
-        goalName: goal.name,
-        targetAmount: goal.target_amount,
-        currentAmount: goal.current_amount || 0,
-        remaining,
-        monthsLeft,
-        monthlyNeeded: monthlyNeeded.toFixed(2),
-        percentageOfIncome: ((monthlyNeeded / monthlyIncome) * 100).toFixed(2)
-      });
-
-      totalNeeded += monthlyNeeded;
-    }
-
-    // Cap savings at 40% of income
-    const maxSavings = monthlyIncome * 0.4;
-    if (totalNeeded > maxSavings) {
-      const ratio = maxSavings / totalNeeded;
-      for (const contrib of contributions) {
-        contrib.adjustedMonthly = (parseFloat(contrib.monthlyNeeded) * ratio).toFixed(2);
-        contrib.warning = 'Adjusted to fit income constraints';
+      if (aiResult && aiResult.budgets && aiResult.budgets.length > 0) {
+        console.log(`✅ Generated ${aiResult.budgets.length} AI budget recommendations`);
+        
+        return {
+          totalMonthlyBudget: monthlyIncome * adjustmentFactor,
+          needsAllocation: aiResult.needs_allocation || needsBudget * adjustmentFactor,
+          wantsAllocation: aiResult.wants_allocation || wantsBudget * adjustmentFactor,
+          savingsTarget: aiResult.savingsTarget || savingsBudget * adjustmentFactor,
+          budgets: aiResult.budgets.map(b => ({
+            category: b.category,
+            type: b.type || 'wants',
+            monthly_limit: Math.round(b.monthly_limit),
+            historical_average: Math.round(categoryAverages[b.category] || 0),
+            reasoning: b.reasoning || 'AI-generated recommendation',
+            method: 'ai'
+          })),
+          adjustmentNote: aiResult.adjustmentNote || (adjustmentFactor < 1 
+            ? 'Budget adjusted for variable income.'
+            : null),
+          method: 'ai'
+        };
       }
-      totalNeeded = maxSavings;
+    } catch (error) {
+      console.error('AI budget generation failed:', error.message);
     }
 
-    return { contributions, totalNeeded };
+    // Fallback to rule-based budget generation
+    console.log('⚙️ Using fallback rule-based budget generation');
+    return this.generateFallbackBudget(userProfile, categoryAverages, adjustmentFactor);
   }
 
-  allocateBudgets(spendingPatterns, available, monthlyIncome) {
+  /**
+   * Fallback rule-based budget generation
+   */
+  generateFallbackBudget(userProfile, categoryAverages, adjustmentFactor) {
+    const monthlyIncome = parseFloat(userProfile.monthly_income) || 0;
+    const needsBudget = monthlyIncome * 0.5 * adjustmentFactor;
+    const wantsBudget = monthlyIncome * 0.3 * adjustmentFactor;
+    const savingsBudget = monthlyIncome * 0.2 * adjustmentFactor;
+
     const budgets = [];
-    const categories = Object.keys(spendingPatterns);
+    const needsCategories = ['Groceries', 'Transportation', 'Bills & Utilities', 'Healthcare', 'Rent', 'EMI'];
+    const wantsCategories = ['Shopping', 'Food & Dining', 'Entertainment', 'Subscriptions', 'Travel', 'Personal Care'];
 
-    // Determine category type
-    for (const category of categories) {
-      let type = 'discretionary';
-      if (this.categoryAllocationRules.essential.includes(category)) {
-        type = 'essential';
-      } else if (this.categoryAllocationRules.growth.includes(category)) {
-        type = 'growth';
-      }
-
-      const currentSpending = spendingPatterns[category].average;
-      let recommendedLimit;
-
-      if (type === 'essential') {
-        // Allow essential spending with 10% buffer
-        recommendedLimit = Math.max(currentSpending * 1.1, currentSpending);
-      } else if (type === 'growth') {
-        // Encourage investment spending
-        recommendedLimit = Math.max(currentSpending, monthlyIncome * 0.1);
-      } else {
-        // Try to reduce discretionary spending by 10-20%
-        recommendedLimit = currentSpending * 0.85;
-      }
-
+    const needsPerCategory = needsBudget / needsCategories.length;
+    for (const category of needsCategories) {
+      const historicalSpend = categoryAverages[category] || 0;
+      const suggestedLimit = Math.max(historicalSpend * 0.9, needsPerCategory);
+      
       budgets.push({
         category,
-        type,
-        currentAverageSpending: currentSpending.toFixed(2),
-        recommendedLimit: recommendedLimit.toFixed(2),
-        change: ((recommendedLimit - currentSpending) / currentSpending * 100).toFixed(2),
-        changeDirection: recommendedLimit >= currentSpending ? 'increase' : 'decrease'
+        type: 'needs',
+        monthly_limit: Math.round(suggestedLimit),
+        historical_average: Math.round(historicalSpend),
+        reasoning: historicalSpend > 0 
+          ? `Based on your average spending of ₹${Math.round(historicalSpend)}`
+          : 'Suggested based on 50/30/20 rule',
+        method: 'rule'
       });
     }
 
-    return budgets.sort((a, b) => parseFloat(b.currentAverageSpending) - parseFloat(a.currentAverageSpending));
+    const wantsPerCategory = wantsBudget / wantsCategories.length;
+    for (const category of wantsCategories) {
+      const historicalSpend = categoryAverages[category] || 0;
+      const suggestedLimit = historicalSpend > 0 
+        ? Math.min(historicalSpend * 0.85, wantsPerCategory * 1.2)
+        : wantsPerCategory;
+      
+      budgets.push({
+        category,
+        type: 'wants',
+        monthly_limit: Math.round(suggestedLimit),
+        historical_average: Math.round(historicalSpend),
+        reasoning: historicalSpend > 0 
+          ? `15% reduction from your average of ₹${Math.round(historicalSpend)}`
+          : 'Suggested based on 50/30/20 rule',
+        method: 'rule'
+      });
+    }
+
+    return {
+      totalMonthlyBudget: monthlyIncome * adjustmentFactor,
+      needsAllocation: needsBudget,
+      wantsAllocation: wantsBudget,
+      savingsTarget: savingsBudget,
+      budgets,
+      adjustmentNote: adjustmentFactor < 1 
+        ? 'Budget adjusted for variable income. Building emergency fund is recommended.'
+        : null,
+      method: 'rule'
+    };
   }
 
-  generateInsights(patterns, budgets, monthlyIncome) {
-    const insights = [];
-    const totalSpending = Object.values(patterns).reduce((sum, p) => sum + p.average, 0);
-    const savingsRate = ((monthlyIncome - totalSpending) / monthlyIncome * 100);
-
-    if (savingsRate < 10) {
-      insights.push({
-        type: 'warning',
-        title: 'Low Savings Rate',
-        message: `Your savings rate is ${savingsRate.toFixed(1)}%. Aim for at least 20% to build financial security.`
-      });
-    } else if (savingsRate > 30) {
-      insights.push({
-        type: 'success',
-        title: 'Great Savings Rate!',
-        message: `You're saving ${savingsRate.toFixed(1)}% of your income. Consider investing the surplus.`
-      });
+  calculateCategoryAverages(transactions) {
+    const monthlyData = {};
+    
+    for (const t of transactions) {
+      if (t.type === 'debit' && t.category) {
+        const month = new Date(t.transaction_date).toISOString().slice(0, 7);
+        if (!monthlyData[month]) monthlyData[month] = {};
+        if (!monthlyData[month][t.category]) monthlyData[month][t.category] = 0;
+        monthlyData[month][t.category] += parseFloat(t.amount);
+      }
     }
 
-    // Check for high spending categories
-    for (const [category, data] of Object.entries(patterns)) {
-      const percentage = (data.average / monthlyIncome) * 100;
-      if (percentage > 25 && !this.categoryAllocationRules.essential.includes(category)) {
-        insights.push({
-          type: 'alert',
-          title: `High ${category} Spending`,
-          message: `${category} accounts for ${percentage.toFixed(1)}% of your income. Consider setting a stricter budget.`
+    const months = Object.keys(monthlyData);
+    const averages = {};
+    
+    for (const month of months) {
+      for (const [category, total] of Object.entries(monthlyData[month])) {
+        if (!averages[category]) averages[category] = { total: 0, count: 0 };
+        averages[category].total += total;
+        averages[category].count += 1;
+      }
+    }
+
+    for (const [category, data] of Object.entries(averages)) {
+      averages[category] = data.total / data.count;
+    }
+
+    return averages;
+  }
+
+  async createGoalPlan(goal, userProfile, currentSavings = 0) {
+    const targetAmount = parseFloat(goal.target_amount);
+    const targetDate = new Date(goal.target_date);
+    const today = new Date();
+    
+    const monthsRemaining = Math.max(1, 
+      (targetDate.getFullYear() - today.getFullYear()) * 12 + 
+      (targetDate.getMonth() - today.getMonth())
+    );
+    
+    const amountNeeded = targetAmount - currentSavings;
+    const monthlyContribution = amountNeeded / monthsRemaining;
+    const monthlyIncome = parseFloat(userProfile.monthly_income) || 0;
+
+    const plan = {
+      goal: goal.name,
+      targetAmount,
+      currentAmount: currentSavings,
+      remainingAmount: amountNeeded,
+      targetDate: goal.target_date,
+      monthsRemaining,
+      requiredMonthlyContribution: Math.ceil(monthlyContribution),
+      percentageOfIncome: monthlyIncome > 0 
+        ? ((monthlyContribution / monthlyIncome) * 100).toFixed(1)
+        : null,
+      feasibility: 'unknown',
+      milestones: [],
+      suggestions: []
+    };
+
+    // Assess feasibility
+    if (monthlyIncome > 0) {
+      const contributionRatio = monthlyContribution / monthlyIncome;
+      if (contributionRatio <= 0.1) {
+        plan.feasibility = 'easy';
+        plan.feasibilityNote = 'This goal is easily achievable with your current income.';
+      } else if (contributionRatio <= 0.2) {
+        plan.feasibility = 'moderate';
+        plan.feasibilityNote = 'Achievable with some adjustments to spending habits.';
+      } else if (contributionRatio <= 0.35) {
+        plan.feasibility = 'challenging';
+        plan.feasibilityNote = 'Will require significant lifestyle changes or extended timeline.';
+      } else {
+        plan.feasibility = 'difficult';
+        plan.feasibilityNote = 'Consider extending the timeline or finding additional income sources.';
+      }
+    }
+
+    // Generate milestones
+    const milestoneInterval = Math.ceil(monthsRemaining / 4);
+    for (let i = 1; i <= 4; i++) {
+      const milestoneMonth = i * milestoneInterval;
+      if (milestoneMonth <= monthsRemaining) {
+        const milestoneAmount = currentSavings + (monthlyContribution * milestoneMonth);
+        plan.milestones.push({
+          month: milestoneMonth,
+          targetAmount: Math.round(milestoneAmount),
+          percentage: Math.round((milestoneAmount / targetAmount) * 100)
         });
       }
     }
 
-    return insights;
-  }
-
-  monthsBetween(date1, date2) {
-    const months = (date2.getFullYear() - date1.getFullYear()) * 12 + 
-                   (date2.getMonth() - date1.getMonth());
-    return Math.max(0, months);
-  }
-
-  // Generate smart goal suggestions
-  suggestGoals(user, transactions) {
-    const suggestions = [];
-    const monthlyIncome = parseFloat(user.monthly_income) || this.estimateIncome(transactions);
+    // Add suggestions
+    if (plan.feasibility === 'challenging' || plan.feasibility === 'difficult') {
+      plan.suggestions.push('Consider extending your target date by 3-6 months.');
+      plan.suggestions.push('Look for ways to increase income through freelancing or side gigs.');
+      plan.suggestions.push('Review subscriptions and recurring expenses for potential cuts.');
+    }
     
-    // Emergency fund suggestion
-    suggestions.push({
-      name: 'Emergency Fund',
-      description: '3-6 months of expenses for financial security',
-      targetAmount: monthlyIncome * 6,
-      priority: 'high',
-      timeframe: '12 months',
-      reason: 'Every financial plan should start with an emergency fund'
-    });
+    if (amountNeeded > 50000) {
+      plan.suggestions.push('Consider investing in short-term mutual funds for better returns.');
+    }
 
-    // Based on income, suggest appropriate goals
-    if (monthlyIncome > 50000) {
+    return plan;
+  }
+
+  /**
+   * AI-enhanced goal suggestions
+   */
+  async suggestGoals(userProfile, transactionHistory, existingGoals = []) {
+    const monthlyIncome = parseFloat(userProfile.monthly_income) || 50000;
+    const categoryAverages = this.calculateCategoryAverages(transactionHistory);
+    
+    console.log('🤖 Generating AI goal suggestions...');
+    
+    try {
+      const aiGoals = await huggingface.generateGoalSuggestions(
+        userProfile,
+        existingGoals,
+        categoryAverages
+      );
+      
+      if (aiGoals && aiGoals.length > 0) {
+        console.log(`✅ Generated ${aiGoals.length} AI goal suggestions`);
+        return aiGoals.map(g => ({
+          ...g,
+          method: 'ai'
+        }));
+      }
+    } catch (error) {
+      console.error('AI goal suggestion failed:', error.message);
+    }
+
+    // Fallback to rule-based suggestions
+    console.log('⚙️ Using fallback goal suggestions');
+    return this.getFallbackGoalSuggestions(userProfile, existingGoals, monthlyIncome);
+  }
+
+  /**
+   * Fallback rule-based goal suggestions
+   */
+  getFallbackGoalSuggestions(userProfile, existingGoals, monthlyIncome) {
+    const suggestions = [];
+    
+    const hasEmergencyFund = existingGoals.some(g => 
+      g.name.toLowerCase().includes('emergency') || g.category === 'emergency'
+    );
+    
+    if (!hasEmergencyFund) {
       suggestions.push({
-        name: 'Investment Portfolio',
-        description: 'Start building a diversified investment portfolio',
-        targetAmount: monthlyIncome * 12,
-        priority: 'medium',
-        timeframe: '24 months',
-        reason: 'Your income level allows for significant wealth building'
+        name: 'Emergency Fund',
+        description: 'Build a safety net for unexpected expenses',
+        suggestedAmount: monthlyIncome * 6,
+        suggestedTimeframe: 12,
+        priority: 'high',
+        category: 'emergency',
+        reasoning: 'Financial experts recommend 6 months of expenses as emergency fund.',
+        method: 'rule'
       });
     }
 
     suggestions.push({
-      name: 'Vacation Fund',
-      description: 'Save for your next vacation',
-      targetAmount: monthlyIncome * 2,
+      name: 'Dream Vacation',
+      description: 'Save for a memorable trip',
+      suggestedAmount: monthlyIncome * 1.5,
+      suggestedTimeframe: 6,
+      priority: 'medium',
+      category: 'lifestyle',
+      reasoning: 'A planned vacation within budget is better than impulse travel spending.',
+      method: 'rule'
+    });
+
+    if (userProfile.risk_tolerance !== 'low') {
+      suggestions.push({
+        name: 'Investment Portfolio',
+        description: 'Start building long-term wealth',
+        suggestedAmount: monthlyIncome * 3,
+        suggestedTimeframe: 12,
+        priority: 'high',
+        category: 'investment',
+        reasoning: 'Starting early with investments maximizes compound growth.',
+        method: 'rule'
+      });
+    }
+
+    suggestions.push({
+      name: 'New Gadget Fund',
+      description: 'Save for electronics or appliances',
+      suggestedAmount: 30000,
+      suggestedTimeframe: 4,
       priority: 'low',
-      timeframe: '6 months',
-      reason: 'Everyone needs a break - plan it financially'
+      category: 'purchase',
+      reasoning: 'Planned purchases prevent credit card debt.',
+      method: 'rule'
     });
 
     return suggestions;
   }
 }
 
-module.exports = BudgetGoalGenerator;
+module.exports = new BudgetGoalGenerator();

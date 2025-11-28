@@ -2,17 +2,17 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../config/database');
-const { authMiddleware } = require('../middleware/auth');
-const TransactionCategorizer = require('../agent/transactionCategorizer');
-const BlockchainService = require('../services/blockchainService');
+const finpalAgent = require('../agent');
+const blockchain = require('../blockchain');
 
 // Get all transactions
-router.get('/', authMiddleware, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const { category, type, startDate, endDate, limit = 50, offset = 0 } = req.query;
-    
+    const userId = req.user.userId;
+    const { limit = 50, offset = 0, category, type, startDate, endDate } = req.query;
+
     let query = 'SELECT * FROM transactions WHERE user_id = ?';
-    const params = [req.user.userId];
+    const params = [userId];
 
     if (category) {
       query += ' AND category = ?';
@@ -35,151 +35,109 @@ router.get('/', authMiddleware, async (req, res) => {
     params.push(parseInt(limit), parseInt(offset));
 
     const [transactions] = await pool.query(query, params);
-    res.json({ transactions });
-  } catch (error) {
-    console.error('Get transactions error:', error);
-    res.status(500).json({ error: 'Failed to get transactions' });
-  }
-});
-
-// Get transaction statistics
-router.get('/stats', authMiddleware, async (req, res) => {
-  try {
-    const { period = 'month' } = req.query;
-    const userId = req.user.userId;
-
-    let dateFilter;
-    if (period === 'week') {
-      dateFilter = 'DATE_SUB(NOW(), INTERVAL 7 DAY)';
-    } else if (period === 'month') {
-      dateFilter = 'DATE_SUB(NOW(), INTERVAL 30 DAY)';
-    } else if (period === 'year') {
-      dateFilter = 'DATE_SUB(NOW(), INTERVAL 365 DAY)';
-    } else {
-      dateFilter = 'DATE_SUB(NOW(), INTERVAL 30 DAY)';
-    }
-
-    // Category breakdown
-    const [categoryBreakdown] = await pool.query(
-      `SELECT category, SUM(amount) as total, COUNT(*) as count
-       FROM transactions 
-       WHERE user_id = ? AND type = 'debit' AND transaction_date >= ${dateFilter}
-       GROUP BY category
-       ORDER BY total DESC`,
-      [userId]
-    );
-
-    // Daily spending trend
-    const [dailyTrend] = await pool.query(
-      `SELECT DATE(transaction_date) as date, 
-              SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END) as income,
-              SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END) as expense
-       FROM transactions 
-       WHERE user_id = ? AND transaction_date >= ${dateFilter}
-       GROUP BY DATE(transaction_date)
-       ORDER BY date ASC`,
-      [userId]
-    );
-
-    // Monthly comparison
-    const [monthlyComparison] = await pool.query(
-      `SELECT DATE_FORMAT(transaction_date, '%Y-%m') as month,
-              SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END) as income,
-              SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END) as expense
-       FROM transactions 
-       WHERE user_id = ? AND transaction_date >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-       GROUP BY DATE_FORMAT(transaction_date, '%Y-%m')
-       ORDER BY month ASC`,
-      [userId]
-    );
-
-    // Top merchants
-    const [topMerchants] = await pool.query(
-      `SELECT merchant_name, SUM(amount) as total, COUNT(*) as count
-       FROM transactions 
-       WHERE user_id = ? AND type = 'debit' AND merchant_name IS NOT NULL AND transaction_date >= ${dateFilter}
-       GROUP BY merchant_name
-       ORDER BY total DESC
-       LIMIT 10`,
+    
+    // Get total count
+    const [countResult] = await pool.query(
+      'SELECT COUNT(*) as total FROM transactions WHERE user_id = ?',
       [userId]
     );
 
     res.json({
-      categoryBreakdown,
-      dailyTrend,
-      monthlyComparison,
-      topMerchants
+      transactions,
+      total: countResult[0].total,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
     });
   } catch (error) {
-    console.error('Get stats error:', error);
-    res.status(500).json({ error: 'Failed to get statistics' });
+    console.error('Get transactions error:', error);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
   }
 });
 
 // Add transaction
-router.post('/', authMiddleware, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const { 
-      bankAccountId, type, amount, description, merchantName, 
-      transactionDate, upiId, referenceNumber, category 
+    const userId = req.user.userId;
+    const {
+      bank_account_id,
+      type,
+      amount,
+      description,
+      merchant_name,
+      transaction_date,
+      upi_id,
+      reference_id
     } = req.body;
 
     const transactionId = uuidv4();
+
+    // Auto-categorize transaction
+    const categorization = await finpalAgent.categorizeTransactions([{
+      description,
+      merchant_name,
+      amount,
+      type
+    }]);
     
-    // Auto-categorize if category not provided
-    let finalCategory = category;
-    if (!finalCategory) {
-      const categorizer = new TransactionCategorizer();
-      finalCategory = await categorizer.categorize({
-        description,
-        merchantName,
-        amount,
-        type
-      });
-    }
+    const category = categorization[0]?.category || 'Other';
 
     await pool.query(
       `INSERT INTO transactions 
-       (id, user_id, bank_account_id, type, amount, description, merchant_name, category, transaction_date, upi_id, reference_number)
+       (id, user_id, bank_account_id, type, amount, category, description, merchant_name, transaction_date, upi_id, reference_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [transactionId, req.user.userId, bankAccountId, type, amount, description, merchantName, finalCategory, transactionDate || new Date(), upiId, referenceNumber]
+      [transactionId, userId, bank_account_id, type, amount, category, description, merchant_name, transaction_date || new Date(), upi_id, reference_id]
     );
 
-    // Update bank account balance
-    const balanceChange = type === 'credit' ? amount : -amount;
-    await pool.query(
-      'UPDATE bank_accounts SET balance = balance + ? WHERE id = ?',
-      [balanceChange, bankAccountId]
-    );
+    // Check if paid user - add to blockchain
+    const [users] = await pool.query('SELECT subscription_plan FROM users WHERE id = ?', [userId]);
+    if (users[0]?.subscription_plan === 'paid') {
+      // Get previous block
+      const [blocks] = await pool.query(
+        'SELECT * FROM blockchain_ledger WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1',
+        [userId]
+      );
 
-    // Check if user is on paid plan for blockchain storage
-    const [users] = await pool.query('SELECT subscription_plan, wallet_address FROM users WHERE id = ?', [req.user.userId]);
-    
-    if (users[0]?.subscription_plan === 'paid' && users[0]?.wallet_address) {
-      try {
-        const blockchainService = new BlockchainService();
-        const txHash = await blockchainService.storeTransaction(req.user.userId, transactionId, {
-          amount, type, category: finalCategory, date: transactionDate
-        });
-        
+      let previousBlock;
+      if (blocks.length === 0) {
+        // Create genesis block
+        previousBlock = blockchain.createGenesisBlock(userId);
         await pool.query(
-          'UPDATE transactions SET blockchain_hash = ? WHERE id = ?',
-          [txHash, transactionId]
+          `INSERT INTO blockchain_ledger (id, user_id, block_hash, previous_hash, data_hash, timestamp, nonce)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [previousBlock.id, userId, previousBlock.hash, previousBlock.previousHash, previousBlock.dataHash, previousBlock.timestamp, previousBlock.nonce]
         );
-      } catch (blockchainError) {
-        console.error('Blockchain storage failed:', blockchainError);
+      } else {
+        previousBlock = {
+          hash: blocks[0].block_hash,
+          index: blocks.length
+        };
       }
+
+      // Create new block for transaction
+      const newBlock = blockchain.createBlock(userId, transactionId, { amount, type, merchant_name, description }, previousBlock);
+      
+      await pool.query(
+        `INSERT INTO blockchain_ledger (id, user_id, transaction_id, block_hash, previous_hash, data_hash, encrypted_data, timestamp, nonce)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [newBlock.id, userId, transactionId, newBlock.hash, newBlock.previousHash, newBlock.dataHash, newBlock.encryptedData, newBlock.timestamp, newBlock.nonce]
+      );
     }
 
     res.status(201).json({
       message: 'Transaction added successfully',
-      transaction: { 
-        id: transactionId, 
-        category: finalCategory,
+      transaction: {
+        id: transactionId,
         type,
         amount,
-        description
-      }
+        category,
+        description,
+        merchant_name,
+        method: categorization[0]?.method || 'rule'
+      },
+      category,
+      method: categorization[0]?.method || 'rule',
+      confidence: categorization[0]?.confidence || 0.8,
+      reasoning: categorization[0]?.reasoning || 'Auto-categorized'
     });
   } catch (error) {
     console.error('Add transaction error:', error);
@@ -187,123 +145,139 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// Bulk import transactions
-router.post('/bulk', authMiddleware, async (req, res) => {
+// Bulk add transactions
+router.post('/bulk', async (req, res) => {
   try {
+    const userId = req.user.userId;
     const { transactions } = req.body;
-    const categorizer = new TransactionCategorizer();
-    const results = [];
 
-    for (const tx of transactions) {
+    if (!Array.isArray(transactions) || transactions.length === 0) {
+      return res.status(400).json({ error: 'Transactions array required' });
+    }
+
+    const results = [];
+    for (const t of transactions) {
       const transactionId = uuidv4();
-      const category = await categorizer.categorize({
-        description: tx.description,
-        merchantName: tx.merchantName,
-        amount: tx.amount,
-        type: tx.type
-      });
+      
+      // Auto-categorize
+      const categorization = await finpalAgent.categorizeTransactions([{
+        description: t.description,
+        merchant_name: t.merchant_name,
+        amount: t.amount,
+        type: t.type
+      }]);
+      
+      const category = categorization[0]?.category || 'Other';
 
       await pool.query(
         `INSERT INTO transactions 
-         (id, user_id, bank_account_id, type, amount, description, merchant_name, category, transaction_date, upi_id, reference_number)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [transactionId, req.user.userId, tx.bankAccountId, tx.type, tx.amount, tx.description, tx.merchantName, category, tx.transactionDate, tx.upiId, tx.referenceNumber]
+         (id, user_id, bank_account_id, type, amount, category, description, merchant_name, transaction_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [transactionId, userId, t.bank_account_id, t.type, t.amount, category, t.description, t.merchant_name, t.transaction_date || new Date()]
       );
 
       results.push({ id: transactionId, category });
     }
 
     res.status(201).json({
-      message: `${results.length} transactions imported successfully`,
+      message: `${results.length} transactions added successfully`,
       results
     });
   } catch (error) {
-    console.error('Bulk import error:', error);
-    res.status(500).json({ error: 'Failed to import transactions' });
+    console.error('Bulk add error:', error);
+    res.status(500).json({ error: 'Failed to add transactions' });
   }
 });
 
-// Re-categorize transactions
-router.post('/recategorize', authMiddleware, async (req, res) => {
+// Get transaction summary
+router.get('/summary', async (req, res) => {
   try {
-    const categorizer = new TransactionCategorizer();
+    const userId = req.user.userId;
+    const { period = 'month' } = req.query;
+
+    console.log('Fetching summary for user:', userId, 'period:', period);
+
+    // First, get the most recent transaction date to use as reference
+    const [latestTxn] = await pool.query(
+      'SELECT MAX(transaction_date) as latest FROM transactions WHERE user_id = ?',
+      [userId]
+    );
     
-    const [transactions] = await pool.query(
-      'SELECT id, description, merchant_name, amount, type FROM transactions WHERE user_id = ?',
-      [req.user.userId]
-    );
+    const latestDate = latestTxn[0]?.latest;
+    console.log('Latest transaction date:', latestDate);
 
-    let updated = 0;
-    for (const tx of transactions) {
-      const category = await categorizer.categorize({
-        description: tx.description,
-        merchantName: tx.merchant_name,
-        amount: tx.amount,
-        type: tx.type
-      });
-
-      await pool.query(
-        'UPDATE transactions SET category = ? WHERE id = ?',
-        [category, tx.id]
-      );
-      updated++;
+    // Use the latest transaction date as reference point instead of NOW()
+    // This ensures we get data even if transactions are in the future or past
+    let dateFilter = '';
+    if (latestDate) {
+      if (period === 'week') {
+        dateFilter = 'AND transaction_date >= DATE_SUB(?, INTERVAL 1 WEEK)';
+      } else if (period === 'month') {
+        dateFilter = 'AND transaction_date >= DATE_SUB(?, INTERVAL 1 MONTH)';
+      } else if (period === 'year') {
+        dateFilter = 'AND transaction_date >= DATE_SUB(?, INTERVAL 1 YEAR)';
+      }
     }
 
-    res.json({ message: `${updated} transactions recategorized` });
+    // Get totals
+    const totalsQuery = latestDate && dateFilter
+      ? `SELECT type, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE user_id = ? ${dateFilter} GROUP BY type`
+      : 'SELECT type, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE user_id = ? GROUP BY type';
+    
+    const totalsParams = latestDate && dateFilter ? [userId, latestDate] : [userId];
+    const [totals] = await pool.query(totalsQuery, totalsParams);
+    console.log('Totals result:', totals);
+
+    // Get category breakdown
+    const categoriesQuery = latestDate && dateFilter
+      ? `SELECT category, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE user_id = ? AND type = 'debit' ${dateFilter} GROUP BY category ORDER BY total DESC`
+      : `SELECT category, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE user_id = ? AND type = 'debit' GROUP BY category ORDER BY total DESC`;
+    
+    const categoriesParams = latestDate && dateFilter ? [userId, latestDate] : [userId];
+    const [categories] = await pool.query(categoriesQuery, categoriesParams);
+    console.log('Categories result:', categories);
+
+    const income = totals.find(t => t.type === 'credit')?.total || 0;
+    const expenses = totals.find(t => t.type === 'debit')?.total || 0;
+
+    const response = {
+      period,
+      income: parseFloat(income),
+      expenses: parseFloat(expenses),
+      savings: parseFloat(income) - parseFloat(expenses),
+      savingsRate: income > 0 ? (((income - expenses) / income) * 100).toFixed(1) : 0,
+      categories: categories.map(c => ({
+        name: c.category,
+        amount: parseFloat(c.total),
+        count: c.count
+      })),
+      transactionCount: totals.reduce((sum, t) => sum + t.count, 0)
+    };
+
+    console.log('Summary response:', response);
+    res.json(response);
   } catch (error) {
-    console.error('Recategorize error:', error);
-    res.status(500).json({ error: 'Failed to recategorize transactions' });
+    console.error('Summary error:', error);
+    res.status(500).json({ error: 'Failed to fetch summary' });
   }
 });
 
-// Update transaction
-router.put('/:id', authMiddleware, async (req, res) => {
+// Recategorize transaction
+router.put('/:id/categorize', async (req, res) => {
   try {
-    const { category, description, merchantName } = req.body;
+    const { id } = req.params;
+    const { category } = req.body;
+    const userId = req.user.userId;
 
     await pool.query(
-      `UPDATE transactions SET 
-        category = COALESCE(?, category),
-        description = COALESCE(?, description),
-        merchant_name = COALESCE(?, merchant_name)
-       WHERE id = ? AND user_id = ?`,
-      [category, description, merchantName, req.params.id, req.user.userId]
+      'UPDATE transactions SET category = ? WHERE id = ? AND user_id = ?',
+      [category, id, userId]
     );
 
-    res.json({ message: 'Transaction updated successfully' });
+    res.json({ message: 'Transaction categorized', category });
   } catch (error) {
-    console.error('Update transaction error:', error);
-    res.status(500).json({ error: 'Failed to update transaction' });
-  }
-});
-
-// Delete transaction
-router.delete('/:id', authMiddleware, async (req, res) => {
-  try {
-    // Get transaction to reverse balance
-    const [transactions] = await pool.query(
-      'SELECT bank_account_id, type, amount FROM transactions WHERE id = ? AND user_id = ?',
-      [req.params.id, req.user.userId]
-    );
-
-    if (transactions.length > 0) {
-      const tx = transactions[0];
-      const balanceChange = tx.type === 'credit' ? -tx.amount : tx.amount;
-      await pool.query(
-        'UPDATE bank_accounts SET balance = balance + ? WHERE id = ?',
-        [balanceChange, tx.bank_account_id]
-      );
-    }
-
-    await pool.query(
-      'DELETE FROM transactions WHERE id = ? AND user_id = ?',
-      [req.params.id, req.user.userId]
-    );
-
-    res.json({ message: 'Transaction deleted successfully' });
-  } catch (error) {
-    console.error('Delete transaction error:', error);
-    res.status(500).json({ error: 'Failed to delete transaction' });
+    console.error('Categorize error:', error);
+    res.status(500).json({ error: 'Failed to update category' });
   }
 });
 

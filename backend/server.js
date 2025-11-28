@@ -2,50 +2,85 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
-const app = express();
+const authMiddleware = require('./middleware/auth');
 
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Import ke routes
+// Routes
 const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const bankAccountRoutes = require('./routes/bankAccounts');
 const transactionRoutes = require('./routes/transactions');
+const bankAccountRoutes = require('./routes/bankAccounts');
 const goalRoutes = require('./routes/goals');
 const budgetRoutes = require('./routes/budgets');
-const insightRoutes = require('./routes/insights');
-const chatRoutes = require('./routes/chat');
+const aiRoutes = require('./routes/ai');
 const blockchainRoutes = require('./routes/blockchain');
-const agentRoutes = require('./routes/agent');
+const categoryRoutes = require('./routes/categories');
 
-// Api ke Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/bank-accounts', bankAccountRoutes);
-app.use('/api/transactions', transactionRoutes);
-app.use('/api/goals', goalRoutes);
-app.use('/api/budgets', budgetRoutes);
-app.use('/api/insights', insightRoutes);
-app.use('/api/chat', chatRoutes);
-app.use('/api/blockchain', blockchainRoutes);
-app.use('/api/agent', agentRoutes);
+const app = express();
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'FinPal API is running' });
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
 });
 
+// Public routes
+app.use('/api/auth', authRoutes);
+
+// Protected routes
+app.use('/api/transactions', authMiddleware, transactionRoutes);
+app.use('/api/bank-accounts', authMiddleware, bankAccountRoutes);
+app.use('/api/goals', authMiddleware, goalRoutes);
+app.use('/api/budgets', authMiddleware, budgetRoutes);
+app.use('/api/ai', authMiddleware, aiRoutes);
+app.use('/api/blockchain', authMiddleware, blockchainRoutes);
+app.use('/api/categories', authMiddleware, categoryRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'FinPal API is running',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Error handling
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  console.error('Error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
 });
 
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`FinPal Backend running on http://0.0.0.0:${PORT}`);
-  console.log(`Local access: http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`
+  ╔═══════════════════════════════════════════════════════╗
+  ║                                                       ║
+  ║   🚀 FinPal Backend Server                            ║
+  ║                                                       ║
+  ║   Server running at: http://${HOST}:${PORT}              ║
+  ║                                                       ║
+  ║   API Endpoints:                                      ║
+  ║   • Auth:         /api/auth                           ║
+  ║   • Transactions: /api/transactions                   ║
+  ║   • Bank Accounts:/api/bank-accounts                  ║
+  ║   • Goals:        /api/goals                          ║
+  ║   • Budgets:      /api/budgets                        ║
+  ║   • AI:           /api/ai                             ║
+  ║   • Blockchain:   /api/blockchain                     ║
+  ║   • Categories:   /api/categories                     ║
+  ║                                                       ║
+  ╚═══════════════════════════════════════════════════════╝
+  `);
 });
 
 module.exports = app;

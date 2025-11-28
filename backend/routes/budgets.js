@@ -2,61 +2,108 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../config/database');
-const { authMiddleware } = require('../middleware/auth');
+const finpalAgent = require('../agent');
 
 // Get all budgets
-router.get('/', authMiddleware, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const [budgets] = await pool.query(
-      'SELECT * FROM budgets WHERE user_id = ? AND month = ? ORDER BY category ASC',
-      [req.user.userId, currentMonth]
+    const userId = req.user.userId;
+    let { month_year } = req.query;
+    
+    // If no month specified, find the most recent month with transactions
+    if (!month_year) {
+      const [latestTxn] = await pool.query(
+        'SELECT DATE_FORMAT(MAX(transaction_date), "%Y-%m") as latest_month FROM transactions WHERE user_id = ?',
+        [userId]
+      );
+      month_year = latestTxn[0]?.latest_month || new Date().toISOString().slice(0, 7);
+    }
+    
+    console.log('Using month_year:', month_year);
+    
+    // First try to get budgets for the transaction month
+    let [budgets] = await pool.query(
+      'SELECT * FROM budgets WHERE user_id = ?',
+      [userId]
     );
 
-    // Calculate current spending for each budget
-    for (const budget of budgets) {
-      const [spending] = await pool.query(
-        `SELECT SUM(amount) as spent FROM transactions 
-         WHERE user_id = ? AND category = ? AND type = 'debit' 
-         AND DATE_FORMAT(transaction_date, '%Y-%m') = ?`,
-        [req.user.userId, budget.category, currentMonth]
-      );
-      budget.current_spent = spending[0]?.spent || 0;
+    // If no budgets exist, return empty with a note
+    if (budgets.length === 0) {
+      return res.json([]);
     }
 
-    res.json({ budgets });
+    // Get the start and end of the month for transaction queries
+    const [year, month] = month_year.split('-');
+    const startDate = `${month_year}-01`;
+    const endDate = new Date(parseInt(year), parseInt(month), 0).toISOString().slice(0, 10);
+
+    console.log('Fetching spending for date range:', startDate, 'to', endDate);
+
+    // Get spending per category for the month
+    const [spending] = await pool.query(
+      `SELECT category, SUM(amount) as total_spent 
+       FROM transactions 
+       WHERE user_id = ? AND type = 'debit' 
+       AND transaction_date >= ? AND transaction_date <= ?
+       GROUP BY category`,
+      [userId, startDate, endDate]
+    );
+
+    console.log('Spending by category:', spending);
+
+    // Create a map of category -> spent amount
+    const spendingMap = {};
+    spending.forEach(s => {
+      spendingMap[s.category] = parseFloat(s.total_spent) || 0;
+    });
+
+    // Merge spending data with budgets
+    const budgetsWithSpending = budgets.map(budget => ({
+      ...budget,
+      current_spent: spendingMap[budget.category] || 0,
+      monthly_limit: parseFloat(budget.monthly_limit) || 0
+    }));
+
+    console.log('Budgets with spending:', budgetsWithSpending);
+    res.json(budgetsWithSpending);
   } catch (error) {
     console.error('Get budgets error:', error);
-    res.status(500).json({ error: 'Failed to get budgets' });
+    res.status(500).json({ error: 'Failed to fetch budgets' });
   }
 });
 
-// Create budget
-router.post('/', authMiddleware, async (req, res) => {
+// Create/Update budget
+router.post('/', async (req, res) => {
   try {
-    const { category, monthlyLimit, alertThreshold } = req.body;
-    const budgetId = uuidv4();
-    const currentMonth = new Date().toISOString().slice(0, 7);
-
-    // Check if budget exists for this category this month
+    const userId = req.user.userId;
+    const { category, monthly_limit, alert_threshold } = req.body;
+    
+    const month_year = new Date().toISOString().slice(0, 7);
+    
+    // Check if budget exists
     const [existing] = await pool.query(
-      'SELECT id FROM budgets WHERE user_id = ? AND category = ? AND month = ?',
-      [req.user.userId, category, currentMonth]
+      'SELECT id FROM budgets WHERE user_id = ? AND category = ? AND month_year = ?',
+      [userId, category, month_year]
     );
 
     if (existing.length > 0) {
-      return res.status(400).json({ error: 'Budget already exists for this category this month' });
+      await pool.query(
+        'UPDATE budgets SET monthly_limit = ?, alert_threshold = ? WHERE id = ?',
+        [monthly_limit, alert_threshold || 80, existing[0].id]
+      );
+      return res.json({ message: 'Budget updated', id: existing[0].id });
     }
 
+    const budgetId = uuidv4();
     await pool.query(
-      `INSERT INTO budgets (id, user_id, category, monthly_limit, alert_threshold, month)
+      `INSERT INTO budgets (id, user_id, category, monthly_limit, month_year, alert_threshold)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [budgetId, req.user.userId, category, monthlyLimit, alertThreshold || 80, currentMonth]
+      [budgetId, userId, category, monthly_limit, month_year, alert_threshold || 80]
     );
 
     res.status(201).json({
       message: 'Budget created successfully',
-      budget: { id: budgetId, category, monthlyLimit }
+      budget: { id: budgetId, category, monthly_limit, month_year }
     });
   } catch (error) {
     console.error('Create budget error:', error);
@@ -64,77 +111,106 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// Update budget
-router.put('/:id', authMiddleware, async (req, res) => {
+// Generate smart budgets
+router.post('/generate', async (req, res) => {
   try {
-    const { monthlyLimit, alertThreshold } = req.body;
-
-    await pool.query(
-      `UPDATE budgets SET 
-        monthly_limit = COALESCE(?, monthly_limit),
-        alert_threshold = COALESCE(?, alert_threshold)
-       WHERE id = ? AND user_id = ?`,
-      [monthlyLimit, alertThreshold, req.params.id, req.user.userId]
+    const userId = req.user.userId;
+    
+    const [users] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+    const [transactions] = await pool.query(
+      'SELECT * FROM transactions WHERE user_id = ? AND transaction_date >= DATE_SUB(NOW(), INTERVAL 3 MONTH)',
+      [userId]
     );
 
-    res.json({ message: 'Budget updated successfully' });
-  } catch (error) {
-    console.error('Update budget error:', error);
-    res.status(500).json({ error: 'Failed to update budget' });
-  }
-});
-
-// Delete budget
-router.delete('/:id', authMiddleware, async (req, res) => {
-  try {
-    await pool.query(
-      'DELETE FROM budgets WHERE id = ? AND user_id = ?',
-      [req.params.id, req.user.userId]
-    );
-    res.json({ message: 'Budget deleted successfully' });
-  } catch (error) {
-    console.error('Delete budget error:', error);
-    res.status(500).json({ error: 'Failed to delete budget' });
-  }
-});
-
-// Get budget alerts
-router.get('/alerts', authMiddleware, async (req, res) => {
-  try {
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const [budgets] = await pool.query(
-      'SELECT * FROM budgets WHERE user_id = ? AND month = ?',
-      [req.user.userId, currentMonth]
-    );
-
-    const alerts = [];
-
-    for (const budget of budgets) {
-      const [spending] = await pool.query(
-        `SELECT SUM(amount) as spent FROM transactions 
-         WHERE user_id = ? AND category = ? AND type = 'debit' 
-         AND DATE_FORMAT(transaction_date, '%Y-%m') = ?`,
-        [req.user.userId, budget.category, currentMonth]
+    const smartBudgets = await finpalAgent.generateBudgets(users[0], transactions);
+    
+    // Save generated budgets
+    const month_year = new Date().toISOString().slice(0, 7);
+    
+    for (const budget of smartBudgets.budgets) {
+      const [existing] = await pool.query(
+        'SELECT id FROM budgets WHERE user_id = ? AND category = ? AND month_year = ?',
+        [userId, budget.category, month_year]
       );
 
-      const spent = spending[0]?.spent || 0;
-      const percentage = (spent / budget.monthly_limit) * 100;
+      if (existing.length === 0) {
+        await pool.query(
+          `INSERT INTO budgets (id, user_id, category, monthly_limit, month_year)
+           VALUES (?, ?, ?, ?, ?)`,
+          [uuidv4(), userId, budget.category, budget.monthly_limit, month_year]
+        );
+      }
+    }
 
-      if (percentage >= budget.alert_threshold) {
-        alerts.push({
-          category: budget.category,
-          limit: budget.monthly_limit,
-          spent,
-          percentage: percentage.toFixed(2),
-          exceeded: percentage >= 100
+    res.json({
+      message: 'Smart budgets generated',
+      budgets: smartBudgets
+    });
+  } catch (error) {
+    console.error('Generate budgets error:', error);
+    res.status(500).json({ error: 'Failed to generate budgets' });
+  }
+});
+
+// Update budget spending (called when transactions are added)
+router.put('/:category/spend', async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { category } = req.params;
+    const { amount } = req.body;
+    
+    const month_year = new Date().toISOString().slice(0, 7);
+
+    await pool.query(
+      'UPDATE budgets SET current_spent = current_spent + ? WHERE user_id = ? AND category = ? AND month_year = ?',
+      [amount, userId, category, month_year]
+    );
+
+    // Check if over budget
+    const [budgets] = await pool.query(
+      'SELECT * FROM budgets WHERE user_id = ? AND category = ? AND month_year = ?',
+      [userId, category, month_year]
+    );
+
+    if (budgets.length > 0) {
+      const budget = budgets[0];
+      const usage = (budget.current_spent / budget.monthly_limit) * 100;
+      
+      if (usage >= 100) {
+        return res.json({
+          message: 'Budget exceeded',
+          alert: true,
+          usage: usage.toFixed(1),
+          budget
+        });
+      } else if (usage >= budget.alert_threshold) {
+        return res.json({
+          message: 'Approaching budget limit',
+          alert: true,
+          usage: usage.toFixed(1),
+          budget
         });
       }
     }
 
-    res.json({ alerts });
+    res.json({ message: 'Spending recorded' });
   } catch (error) {
-    console.error('Get alerts error:', error);
-    res.status(500).json({ error: 'Failed to get budget alerts' });
+    console.error('Update spending error:', error);
+    res.status(500).json({ error: 'Failed to update spending' });
+  }
+});
+
+// Delete budget
+router.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.userId;
+
+    await pool.query('DELETE FROM budgets WHERE id = ? AND user_id = ?', [id, userId]);
+    res.json({ message: 'Budget deleted' });
+  } catch (error) {
+    console.error('Delete budget error:', error);
+    res.status(500).json({ error: 'Failed to delete budget' });
   }
 });
 

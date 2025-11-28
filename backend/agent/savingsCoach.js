@@ -1,281 +1,312 @@
-/**
- * Savings Coach Agent
- * Provides personalized savings tips and behavioral nudges
- */
+const huggingface = require('./huggingface');
 
 class SavingsCoach {
   constructor() {
+    // Fallback templates when AI is unavailable
     this.nudgeTemplates = {
       overspending: [
-        "You've spent ₹{amount} on {category} this week - want to move ₹{suggested} to your savings goal?",
-        "Heads up! Your {category} spending is {percent}% higher than last week.",
-        "You're close to your {category} budget limit. Consider slowing down!",
+        "You've spent ₹{amount} on {category} this week - want to move ₹{saveAmount} to your savings goal?",
+        "Your {category} spending is {percent}% higher than usual. Consider saving the extra ₹{saveAmount}.",
+        "Quick win: Skipping {suggestion} could save you ₹{saveAmount} this month!"
       ],
       positive: [
-        "Great job! You saved ₹{amount} compared to last week.",
-        "You're on track to save ₹{projected} this month!",
-        "Your {category} spending is down {percent}% - keep it up!",
+        "Great job! You saved ₹{amount} more than last month! 🎉",
+        "You're on track to save ₹{projected} this month. Keep it up!",
+        "Your savings rate improved by {percent}% this month!"
       ],
-      goalProgress: [
-        "You're {percent}% towards your '{goal}' goal! Keep going!",
-        "Just ₹{remaining} more to reach your '{goal}' goal!",
-        "At this rate, you'll reach '{goal}' {time} ahead of schedule!",
+      goal: [
+        "You're ₹{remaining} away from your {goalName} goal. Just {months} more months!",
+        "Saving an extra ₹{extra} today gets you closer to {goalName}.",
+        "At this rate, you'll reach {goalName} by {date}!"
       ]
     };
   }
 
-  async generateTips(transactions, goals, user) {
-    const tips = [];
-    const expenses = transactions.filter(tx => tx.type === 'debit');
-    const monthlyIncome = parseFloat(user.monthly_income) || 0;
-
-    // Analyze spending patterns
-    const categorySpending = this.getCategorySpending(expenses);
-    const weeklySpending = this.getWeeklySpending(expenses);
-
-    // Generate category-specific tips
-    for (const [category, data] of Object.entries(categorySpending)) {
-      const categoryTips = this.generateCategoryTips(category, data, monthlyIncome);
-      tips.push(...categoryTips);
-    }
-
-    // Generate goal-based tips
-    const goalTips = this.generateGoalTips(goals, monthlyIncome, weeklySpending);
-    tips.push(...goalTips);
-
-    // Generate general savings tips based on user profile
-    const generalTips = this.generateGeneralTips(user, categorySpending, monthlyIncome);
-    tips.push(...generalTips);
-
-    return tips.slice(0, 10); // Return top 10 most relevant tips
-  }
-
-  getCategorySpending(expenses) {
-    const spending = {};
-    const now = new Date();
-    
-    for (const tx of expenses) {
-      const category = tx.category || 'Other Expense';
-      const txDate = new Date(tx.transaction_date);
-      const daysAgo = Math.floor((now - txDate) / (24 * 60 * 60 * 1000));
+  /**
+   * Generate AI-powered nudge
+   */
+  async generateNudge(type, data, userProfile = {}) {
+    // Try AI first
+    try {
+      const nudgeContext = {
+        type,
+        ...data
+      };
       
-      if (!spending[category]) {
-        spending[category] = {
-          thisWeek: 0,
-          thisMonth: 0,
-          lastMonth: 0,
-          count: 0
+      const aiNudges = await huggingface.generateNudges([nudgeContext], userProfile);
+      
+      if (aiNudges && aiNudges.length > 0) {
+        const aiNudge = aiNudges[0];
+        return {
+          type,
+          message: aiNudge.message,
+          action: aiNudge.action,
+          priority: aiNudge.priority || 'medium',
+          timestamp: new Date(),
+          data,
+          method: 'ai'
         };
       }
-
-      if (daysAgo <= 7) spending[category].thisWeek += parseFloat(tx.amount);
-      if (daysAgo <= 30) spending[category].thisMonth += parseFloat(tx.amount);
-      if (daysAgo > 30 && daysAgo <= 60) spending[category].lastMonth += parseFloat(tx.amount);
-      spending[category].count++;
+    } catch (error) {
+      console.error('AI nudge generation failed:', error.message);
     }
 
-    return spending;
+    // Fallback to templates
+    return this.generateFallbackNudge(type, data);
   }
 
-  getWeeklySpending(expenses) {
-    const weekly = { thisWeek: 0, lastWeek: 0 };
-    const now = new Date();
+  /**
+   * Fallback template-based nudge
+   */
+  generateFallbackNudge(type, data) {
+    const templates = this.nudgeTemplates[type] || this.nudgeTemplates.positive;
+    let template = templates[Math.floor(Math.random() * templates.length)];
     
-    for (const tx of expenses) {
-      const daysAgo = Math.floor((now - new Date(tx.transaction_date)) / (24 * 60 * 60 * 1000));
-      if (daysAgo <= 7) weekly.thisWeek += parseFloat(tx.amount);
-      else if (daysAgo <= 14) weekly.lastWeek += parseFloat(tx.amount);
+    for (const [key, value] of Object.entries(data)) {
+      template = template.replace(`{${key}}`, value);
     }
-
-    return weekly;
+    
+    return {
+      type,
+      message: template,
+      timestamp: new Date(),
+      data,
+      method: 'template'
+    };
   }
 
-  generateCategoryTips(category, data, monthlyIncome) {
-    const tips = [];
-
-    // High spending alert
-    if (monthlyIncome > 0 && (data.thisMonth / monthlyIncome) > 0.25) {
-      tips.push({
-        type: 'warning',
-        category,
-        title: `High ${category} Spending`,
-        message: `You've spent ₹${data.thisMonth.toFixed(0)} on ${category} this month, which is ${((data.thisMonth / monthlyIncome) * 100).toFixed(0)}% of your income.`,
-        action: `Try to reduce ${category} spending by ₹${(data.thisMonth * 0.2).toFixed(0)} this month.`,
-        priority: 'high'
-      });
-    }
-
-    // Week over week increase
-    if (data.thisWeek > data.thisMonth / 4 * 1.3) {
-      tips.push({
-        type: 'alert',
-        category,
-        title: `${category} Spending Spike`,
-        message: `Your ${category} spending this week is higher than your weekly average.`,
-        action: 'Consider pausing non-essential purchases in this category.',
-        priority: 'medium'
-      });
-    }
-
-    // Month over month comparison
-    if (data.lastMonth > 0 && data.thisMonth > data.lastMonth * 1.2) {
-      const increase = ((data.thisMonth - data.lastMonth) / data.lastMonth * 100).toFixed(0);
-      tips.push({
-        type: 'info',
-        category,
-        title: `${category} Up ${increase}%`,
-        message: `Your ${category} spending is up ${increase}% compared to last month.`,
-        action: 'Review your transactions to identify any unnecessary expenses.',
-        priority: 'low'
-      });
-    }
-
-    return tips;
-  }
-
-  generateGoalTips(goals, monthlyIncome, weeklySpending) {
-    const tips = [];
-    const activeGoals = goals.filter(g => g.status === 'active');
-
-    for (const goal of activeGoals) {
-      const progress = (parseFloat(goal.current_amount) / parseFloat(goal.target_amount)) * 100;
-      const remaining = parseFloat(goal.target_amount) - parseFloat(goal.current_amount);
-      const monthsLeft = Math.max(1, this.monthsBetween(new Date(), new Date(goal.target_date)));
-      const onTrack = remaining / monthsLeft <= monthlyIncome * 0.2;
-
-      if (progress >= 75) {
-        tips.push({
-          type: 'success',
-          category: 'Goals',
-          title: 'Almost There!',
-          message: `You're ${progress.toFixed(0)}% towards "${goal.name}"! Just ₹${remaining.toFixed(0)} to go.`,
-          action: 'Consider a final push to complete this goal!',
-          priority: 'high'
-        });
-      } else if (!onTrack) {
-        tips.push({
-          type: 'warning',
-          category: 'Goals',
-          title: 'Goal Needs Attention',
-          message: `"${goal.name}" requires ₹${(remaining / monthsLeft).toFixed(0)}/month to complete on time.`,
-          action: 'Look for areas to cut spending or extend your timeline.',
-          priority: 'high'
-        });
-      }
-    }
-
-    // Suggest moving excess to goals
-    if (weeklySpending.lastWeek > weeklySpending.thisWeek && activeGoals.length > 0) {
-      const saved = weeklySpending.lastWeek - weeklySpending.thisWeek;
-      tips.push({
-        type: 'opportunity',
-        category: 'Savings',
-        title: 'Savings Opportunity',
-        message: `You spent ₹${saved.toFixed(0)} less this week than last week.`,
-        action: `Move ₹${(saved * 0.5).toFixed(0)} to your "${activeGoals[0].name}" goal?`,
-        priority: 'medium'
-      });
-    }
-
-    return tips;
-  }
-
-  generateGeneralTips(user, categorySpending, monthlyIncome) {
-    const tips = [];
-
-    // Subscription review
-    if (categorySpending['Subscriptions']?.thisMonth > 1000) {
-      tips.push({
-        type: 'tip',
-        category: 'Subscriptions',
-        title: 'Subscription Audit',
-        message: 'You spend over ₹1000/month on subscriptions.',
-        action: 'Review and cancel subscriptions you don\'t use regularly. Consider sharing family plans.',
-        priority: 'medium'
-      });
-    }
-
-    // Income type specific tips
-    if (user.income_type === 'irregular' || user.income_type === 'freelance' || user.income_type === 'gig') {
-      tips.push({
-        type: 'tip',
-        category: 'Income',
-        title: 'Irregular Income Strategy',
-        message: 'As a freelancer/gig worker, income stability is key.',
-        action: 'Build a buffer of 2-3 months expenses and save 30% during high-income months.',
-        priority: 'high'
-      });
-    }
-
-    // Emergency fund check
-    const totalBalance = monthlyIncome * 3; // Assumption
-    if (totalBalance < monthlyIncome * 6) {
-      tips.push({
-        type: 'tip',
-        category: 'Emergency Fund',
-        title: 'Build Your Safety Net',
-        message: 'An emergency fund of 6 months expenses is essential.',
-        action: 'Aim to save at least 10% of income towards emergency fund.',
-        priority: 'high'
-      });
-    }
-
-    return tips;
-  }
-
-  async generateNudges(transactions, goals) {
+  /**
+   * Analyze spending and generate AI nudges
+   */
+  async analyzeAndNudge(userTransactions, userGoals, userBudgets, userProfile = {}) {
     const nudges = [];
-    const expenses = transactions.filter(tx => tx.type === 'debit');
-    const categorySpending = this.getCategorySpending(expenses);
-    const weeklySpending = this.getWeeklySpending(expenses);
-
-    // Spending nudge
-    for (const [category, data] of Object.entries(categorySpending)) {
-      if (data.thisWeek > 500 && data.thisWeek > (data.thisMonth - data.thisWeek) / 3) {
-        const suggestedMove = Math.min(200, data.thisWeek * 0.25);
-        nudges.push({
-          type: 'spending',
-          message: `You've spent ₹${data.thisWeek.toFixed(0)} on ${category} this week - want to move ₹${suggestedMove.toFixed(0)} to your savings?`,
-          category,
-          amount: data.thisWeek,
-          suggestedAction: {
-            type: 'transfer_to_savings',
-            amount: suggestedMove
-          }
-        });
+    const nudgeContexts = [];
+    const now = new Date();
+    const weekStart = new Date(now.setDate(now.getDate() - 7));
+    
+    // Analyze this week's spending
+    const weeklySpending = {};
+    for (const t of userTransactions) {
+      const tDate = new Date(t.transaction_date);
+      if (tDate >= weekStart && t.type === 'debit') {
+        const category = t.category || 'Other';
+        if (!weeklySpending[category]) weeklySpending[category] = 0;
+        weeklySpending[category] += parseFloat(t.amount);
       }
     }
 
-    // Goal progress nudge
-    for (const goal of goals) {
-      const progress = (parseFloat(goal.current_amount) / parseFloat(goal.target_amount)) * 100;
-      if (progress > 50 && progress < 90) {
-        const remaining = parseFloat(goal.target_amount) - parseFloat(goal.current_amount);
-        nudges.push({
+    // Build nudge contexts for overspending
+    for (const [category, amount] of Object.entries(weeklySpending)) {
+      const budget = userBudgets.find(b => b.category === category);
+      if (budget) {
+        const weeklyBudget = budget.monthly_limit / 4;
+        if (amount > weeklyBudget) {
+          const percentOver = Math.round((amount / weeklyBudget - 1) * 100);
+          nudgeContexts.push({
+            type: 'overspending',
+            category,
+            amount: Math.round(amount),
+            budget: Math.round(weeklyBudget),
+            percentOver,
+            saveAmount: Math.round((amount - weeklyBudget) * 0.5)
+          });
+        }
+      }
+    }
+
+    // Build nudge contexts for goals
+    for (const goal of userGoals) {
+      if (goal.status === 'active') {
+        const remaining = goal.target_amount - goal.current_amount;
+        const targetDate = new Date(goal.target_date);
+        const monthsRemaining = Math.max(1,
+          (targetDate.getFullYear() - new Date().getFullYear()) * 12 +
+          (targetDate.getMonth() - new Date().getMonth())
+        );
+        
+        nudgeContexts.push({
           type: 'goal',
-          message: `You're ${progress.toFixed(0)}% towards "${goal.name}"! Just ₹${remaining.toFixed(0)} more to go!`,
-          goalId: goal.id,
-          progress
+          goalName: goal.name,
+          remaining: Math.round(remaining),
+          months: monthsRemaining,
+          progress: Math.round((goal.current_amount / goal.target_amount) * 100)
         });
       }
     }
 
-    // Positive reinforcement
-    if (weeklySpending.thisWeek < weeklySpending.lastWeek) {
-      const saved = weeklySpending.lastWeek - weeklySpending.thisWeek;
-      nudges.push({
-        type: 'positive',
-        message: `Great job! You spent ₹${saved.toFixed(0)} less this week than last week! 🎉`,
-        amount: saved
-      });
+    // Generate AI nudges if we have contexts
+    if (nudgeContexts.length > 0) {
+      console.log(`🤖 Generating ${nudgeContexts.length} AI nudges...`);
+      
+      try {
+        const aiNudges = await huggingface.generateNudges(nudgeContexts, userProfile);
+        
+        if (aiNudges && aiNudges.length > 0) {
+          console.log(`✅ Generated ${aiNudges.length} AI nudges`);
+          
+          for (let i = 0; i < aiNudges.length; i++) {
+            nudges.push({
+              type: nudgeContexts[i].type,
+              message: aiNudges[i].message,
+              action: aiNudges[i].action,
+              priority: aiNudges[i].priority,
+              timestamp: new Date(),
+              data: nudgeContexts[i],
+              method: 'ai'
+            });
+          }
+          return nudges;
+        }
+      } catch (error) {
+        console.error('AI nudge batch generation failed:', error.message);
+      }
+    }
+
+    // Fallback to template-based nudges
+    console.log('⚙️ Using fallback template nudges');
+    for (const ctx of nudgeContexts) {
+      nudges.push(this.generateFallbackNudge(ctx.type, ctx));
     }
 
     return nudges;
   }
 
-  monthsBetween(date1, date2) {
-    return Math.max(0, (date2.getFullYear() - date1.getFullYear()) * 12 + (date2.getMonth() - date1.getMonth()));
+  getSuggestionForCategory(category) {
+    const suggestions = {
+      'Food & Dining': 'one restaurant meal',
+      'Entertainment': 'a movie outing',
+      'Shopping': 'that impulse purchase',
+      'Transportation': 'a few cab rides',
+      'Subscriptions': 'an unused subscription'
+    };
+    return suggestions[category] || 'some expenses';
+  }
+
+  async generateWeeklyReport(transactions, goals, budgets, previousWeek, userProfile = {}) {
+    const report = {
+      weekStart: new Date(new Date().setDate(new Date().getDate() - 7)),
+      weekEnd: new Date(),
+      totalSpent: 0,
+      totalSaved: 0,
+      categoryBreakdown: {},
+      topInsight: '',
+      actionItems: [],
+      goalProgress: [],
+      comparisonWithLastWeek: null,
+      aiSummary: null
+    };
+
+    // Calculate weekly spending (local computation)
+    for (const t of transactions) {
+      const tDate = new Date(t.transaction_date);
+      if (tDate >= report.weekStart && tDate <= report.weekEnd) {
+        if (t.type === 'debit') {
+          report.totalSpent += parseFloat(t.amount);
+          const category = t.category || 'Other';
+          if (!report.categoryBreakdown[category]) {
+            report.categoryBreakdown[category] = 0;
+          }
+          report.categoryBreakdown[category] += parseFloat(t.amount);
+        } else {
+          report.totalSaved += parseFloat(t.amount);
+        }
+      }
+    }
+
+    // Compare with previous week
+    if (previousWeek) {
+      const diff = report.totalSpent - previousWeek.totalSpent;
+      report.comparisonWithLastWeek = {
+        difference: Math.abs(diff),
+        direction: diff > 0 ? 'more' : 'less',
+        percentage: ((Math.abs(diff) / previousWeek.totalSpent) * 100).toFixed(1)
+      };
+    }
+
+    // Top insight
+    const topCategory = Object.entries(report.categoryBreakdown)
+      .sort((a, b) => b[1] - a[1])[0];
+    
+    if (topCategory) {
+      report.topInsight = `Your biggest expense was ${topCategory[0]} at ₹${Math.round(topCategory[1])}.`;
+    }
+
+    // Action items
+    for (const [category, amount] of Object.entries(report.categoryBreakdown)) {
+      const budget = budgets.find(b => b.category === category);
+      if (budget && amount > budget.monthly_limit / 4) {
+        report.actionItems.push({
+          category,
+          action: `Reduce ${category} spending next week`,
+          reason: `You spent ₹${Math.round(amount)} but weekly budget is ₹${Math.round(budget.monthly_limit / 4)}`
+        });
+      }
+    }
+
+    // Goal progress
+    for (const goal of goals) {
+      if (goal.status === 'active') {
+        const progress = (goal.current_amount / goal.target_amount) * 100;
+        report.goalProgress.push({
+          name: goal.name,
+          progress: progress.toFixed(1),
+          remaining: goal.target_amount - goal.current_amount,
+          onTrack: progress >= this.calculateExpectedProgress(goal)
+        });
+      }
+    }
+
+    return report;
+  }
+
+  calculateExpectedProgress(goal) {
+    const startDate = new Date(goal.created_at);
+    const endDate = new Date(goal.target_date);
+    const now = new Date();
+    
+    const totalDuration = endDate - startDate;
+    const elapsed = now - startDate;
+    
+    return (elapsed / totalDuration) * 100;
+  }
+
+  async getMotivationalMessage(userProfile, recentProgress) {
+    const messages = [];
+    
+    if (recentProgress.savingsIncreased) {
+      messages.push({
+        type: 'celebration',
+        message: `🎉 Amazing! You saved ${recentProgress.savingsPercent}% more this month!`,
+        emoji: '🎉'
+      });
+    }
+    
+    if (recentProgress.goalReached) {
+      messages.push({
+        type: 'achievement',
+        message: `🏆 Congratulations! You reached your "${recentProgress.goalName}" goal!`,
+        emoji: '🏆'
+      });
+    }
+    
+    if (recentProgress.streakDays > 0) {
+      messages.push({
+        type: 'streak',
+        message: `🔥 ${recentProgress.streakDays} days of staying under budget! Keep the streak going!`,
+        emoji: '🔥'
+      });
+    }
+    
+    if (messages.length === 0) {
+      messages.push({
+        type: 'encouragement',
+        message: "Every small step counts. Let's make today a great financial day! 💪",
+        emoji: '💪'
+      });
+    }
+    
+    return messages;
   }
 }
 
-module.exports = SavingsCoach;
+module.exports = new SavingsCoach();
