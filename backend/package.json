@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 {
   "name": "finpal-backend",
   "version": "1.0.0",
@@ -27,3 +28,34 @@
     "nodemon": "^3.0.2"
   }
 }
+=======
+{
+  "name": "finpal-backend",
+  "version": "1.0.0",
+  "description": "FinPal AI-powered financial coaching backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "setup-db": "node config/setupDatabase.js",
+    "seed": "node config/seedData.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mysql2": "^3.6.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^9.0.1",
+    "@langchain/core": "^0.2.18",
+    "@langchain/langgraph": "^0.0.31",
+    "@langchain/community": "^0.2.20",
+    "crypto-js": "^4.2.0",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
+>>>>>>> 2c5691fad8196faad9092c0293bb4957adef9391
