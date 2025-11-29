@@ -1,9 +1,5 @@
 <<<<<<< HEAD
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-// IMPORTANT: Backend is exposed via localtunnel so Expo Go works off-LAN
-// Current tunnel: https://finpal-backend.loca.lt
-// If you restart localtunnel and the URL changes, update this value.
 const API_BASE_URL = 'https://rattly-acanthocarpous-debby.ngrok-free.dev/api';
 
 class ApiService {
@@ -554,4 +550,5 @@ class ApiService {
 }
 
 export default new ApiService();
+
 >>>>>>> 2c5691fad8196faad9092c0293bb4957adef9391
